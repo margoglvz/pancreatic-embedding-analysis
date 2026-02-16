@@ -1,0 +1,8 @@
+# Dependencies
+venv
+/__pycache__
+
+# Data
+data
+outputs
+
