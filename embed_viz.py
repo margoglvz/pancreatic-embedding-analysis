@@ -26,10 +26,12 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import umap
 from keybert import KeyBERT
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.neighbors import KernelDensity
 
 try:
     import hdbscan
@@ -107,14 +109,66 @@ def keywords_for_texts(texts: List[str], top_n: int = 8) -> List[List[str]]:
     return out
 
 
+def kde2d_on_grid(
+    xy: np.ndarray,
+    gridsize: int = 220,
+    bandwidth: Optional[float] = None,
+    pad_frac: float = 0.06,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Fit a 2D Gaussian KDE over points `xy` and evaluate it on a regular grid.
+
+    Returns (xs, ys, Z) where xs/ys are 1D grid coordinates and Z is a (len(ys), len(xs)) density array.
+    """
+    xy = np.asarray(xy, dtype=np.float64)
+    xy = xy[np.isfinite(xy).all(axis=1)]
+    if xy.shape[0] == 0:
+        raise ValueError("Cannot compute KDE: no finite 2D points.")
+
+    if bandwidth is None:
+        scale = float(np.mean(np.std(xy, axis=0)))
+        bandwidth = max(0.15 * scale, 1e-3)
+
+    x_min, x_max = float(xy[:, 0].min()), float(xy[:, 0].max())
+    y_min, y_max = float(xy[:, 1].min()), float(xy[:, 1].max())
+    x_pad = (x_max - x_min) * pad_frac if x_max > x_min else 1.0
+    y_pad = (y_max - y_min) * pad_frac if y_max > y_min else 1.0
+
+    xs = np.linspace(x_min - x_pad, x_max + x_pad, int(gridsize))
+    ys = np.linspace(y_min - y_pad, y_max + y_pad, int(gridsize))
+    X, Y = np.meshgrid(xs, ys)
+    grid = np.column_stack([X.ravel(), Y.ravel()])
+
+    kde = KernelDensity(kernel="gaussian", bandwidth=float(bandwidth))
+    kde.fit(xy)
+    log_d = kde.score_samples(grid)
+    Z = np.exp(log_d).reshape(len(ys), len(xs))
+    return xs, ys, Z
+
+
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--in", dest="inp", default="data/pubmed_pancreatic_cancer.csv")
+    p.add_argument("--in", dest="inp", default="data/pubmed_pancreatic_cancer_v2.csv")
     p.add_argument("--text-col", default="abstract")
     p.add_argument("--model", default="allenai/specter")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--cluster", choices=["hdbscan", "none"], default="hdbscan")
     p.add_argument("--min-cluster-size", type=int, default=25)
+    p.add_argument(
+        "--kde",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Overlay overall 2D Gaussian KDE density on the plot.",
+    )
+    p.add_argument(
+        "--kde-bandwidth",
+        type=float,
+        default=None,
+        help="KDE bandwidth in UMAP-coordinate units (default: heuristic).",
+    )
+    p.add_argument("--kde-grid", type=int, default=220, help="Grid size per axis for KDE evaluation.")
+    p.add_argument("--kde-opacity", type=float, default=0.35, help="Opacity for KDE overlay.")
+    p.add_argument("--kde-colorscale", default="Inferno", help="Plotly colorscale name for KDE overlay.")
     p.add_argument("--outdir", default="outputs")
     args = p.parse_args()
 
@@ -124,7 +178,7 @@ def main():
     texts = df[args.text_col].astype(str).tolist()
 
     # Check if embeddings already exist (cache)
-    emb_path = os.path.join(args.outdir, "embeddings.npy")
+    emb_path = os.path.join(args.outdir, "embeddings_v2.npy")
     if os.path.exists(emb_path):
         print(f"Loading cached embeddings from {emb_path}")
         emb = np.load(emb_path)
@@ -183,9 +237,9 @@ def main():
             df.loc[i, "bridge_keywords"] = ", ".join(kk)
 
     # Save artifacts
-    out_csv = os.path.join(args.outdir, "embedded_2d.csv")
+    out_csv = os.path.join(args.outdir, "embedded_2d_v2.csv")
     df.to_csv(out_csv, index=False)
-    np.save(os.path.join(args.outdir, "embeddings.npy"), emb)
+    np.save(os.path.join(args.outdir, "embeddings_v2.npy"), emb)
 
     # Plot
     hover = ["pmid", "year", "journal", "title", "cluster", "is_bridge", "bridge_keywords"]
@@ -198,6 +252,24 @@ def main():
         title=f"PubMed abstracts: {args.model}",
         opacity=0.75,
     )
+
+    if args.kde:
+        xs, ys, Z = kde2d_on_grid(xy, gridsize=args.kde_grid, bandwidth=args.kde_bandwidth)
+        kde_trace = go.Contour(
+            x=xs,
+            y=ys,
+            z=Z,
+            contours=dict(coloring="heatmap"),
+            colorscale=args.kde_colorscale,
+            opacity=float(args.kde_opacity),
+            showscale=False,
+            hoverinfo="skip",
+            name="density",
+        )
+        fig.add_trace(kde_trace)
+        # Ensure KDE sits behind the scatter
+        fig.data = (fig.data[-1],) + fig.data[:-1]
+
     # emphasize bridge
     if df["is_bridge"].any():
         bridge_df = df[df["is_bridge"]]
@@ -209,10 +281,10 @@ def main():
             name="bridge",
             text=bridge_df["title"],
         )
-    out_html = os.path.join(args.outdir, "plot.html")
+    out_html = os.path.join(args.outdir, "plot_v2.html")
     fig.write_html(out_html, include_plotlyjs="cdn")
 
-    print(f"Wrote:\n- {out_csv}\n- {out_html}\n- {os.path.join(args.outdir, 'embeddings.npy')}")
+    print(f"Wrote:\n- {out_csv}\n- {out_html}\n- {os.path.join(args.outdir, 'embeddings_v2.npy')}")
 
 
 if __name__ == "__main__":
