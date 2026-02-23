@@ -95,9 +95,7 @@ def fetch_records(pmids: List[str], batch_size: int = 200, sleep_s: float = 0.34
     for i in range(0, len(pmids), batch_size):
         batch = pmids[i : i + batch_size]
         handle = Entrez.efetch(db="pubmed", id=",".join(batch), retmode="xml")
-        print("Handle: ", handle)
         records = Entrez.read(handle)
-        print("Records: ", records)
         for article in records.get("PubmedArticle", []):
             yield article
         time.sleep(sleep_s)  # don't go above NCBI limit
@@ -105,11 +103,12 @@ def fetch_records(pmids: List[str], batch_size: int = 200, sleep_s: float = 0.34
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--term", default="pancreatic cancer")
-    p.add_argument("--retmax", type=int, default=2000)
+    query = '("Pancreatic Neoplasms"[MeSH] OR "pancreatic cancer"[Title/Abstract] OR "pancreatic adenocarcinoma"[Title/Abstract] OR "pancreatic ductal adenocarcinoma"[Title/Abstract] OR PDAC[Title/Abstract] )'
+    p.add_argument("--term", default=query)
+    p.add_argument("--retmax", type=int, default=5000)
     p.add_argument("--batch-size", type=int, default=200)
-    p.add_argument("--out", default="data/pubmed_pancreatic_cancer.csv")
-    p.add_argument("--email", default=os.environ.get("NCBI_EMAIL", "your_email@example.com"))
+    p.add_argument("--out", default="data/pubmed_pancreatic_cancer_v2.csv")
+    p.add_argument("--email", default=os.environ.get("NCBI_EMAIL", "msgalvez@uci.edu"))
     p.add_argument("--api-key", default=os.environ.get("NCBI_API_KEY"))
     args = p.parse_args()
 
