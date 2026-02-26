@@ -3,7 +3,7 @@
 Pipeline for **collecting PubMed abstracts**, **embedding them**, then **visualizing + cluster** to explore research “gaps”.
 
 ### 1) Create a dataset 
-- **Currently querying 5,000 abstracts** with inclusive words to make sure the embedding space accurately represents pancreatic cancer research
+- **Currently querying 5,000 abstracts** with key and MeSH words to make sure the embedding space accurately represents pancreatic cancer research
 
 Run:
 
