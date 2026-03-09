@@ -2,8 +2,8 @@
 
 Pipeline for **collecting PubMed abstracts**, **embedding them**, then **visualizing + cluster** to explore research “gaps”.
 
-### 1) Create a dataset (how much data?)
-- **Start with 2,000–10,000 abstracts** for a single query (e.g., `"pancreatic cancer"`)
+### 1) Create a dataset 
+- **Currently querying 5,000 abstracts** with key and MeSH words to make sure the embedding space accurately represents pancreatic cancer research
 
 Run:
 
