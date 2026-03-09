@@ -30,6 +30,7 @@ import plotly.graph_objects as go
 import umap
 from keybert import KeyBERT
 from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.neighbors import KernelDensity
 
@@ -69,10 +70,10 @@ def reduce_umap(emb: np.ndarray, n_neighbors: int = 20, min_dist: float = 0.05, 
     return reducer.fit_transform(emb)
 
 
-def cluster_hdbscan(emb: np.ndarray, min_cluster_size: int = 25) -> np.ndarray:
+def cluster_hdbscan(emb: np.ndarray, min_cluster_size: int = 10, min_samples: int = 1) -> np.ndarray:
     if hdbscan is None:
         raise RuntimeError("hdbscan is not installed. Install it or use --cluster none.")
-    clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size, metric="euclidean")
+    clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size, min_samples=min_samples, metric="euclidean", cluster_selection_method="leaf")
     return clusterer.fit_predict(emb)
 
 
@@ -109,11 +110,57 @@ def keywords_for_texts(texts: List[str], top_n: int = 8) -> List[List[str]]:
     return out
 
 
+def cluster_top_terms_tfidf(
+    texts: List[str],
+    labels: np.ndarray,
+    top_k: int = 3,
+    max_features: int = 5000,
+    min_df: int = 2,
+) -> dict[int, List[str]]:
+    """
+    Compute representative terms per cluster using TF-IDF across clusters.
+
+    Treat each cluster as a "document" made by concatenating its member texts, fit a TF-IDF
+    vectorizer across those cluster-documents, and return top_k highest-scoring terms per cluster.
+    """
+    labels = np.asarray(labels, dtype=int)
+    clusters = sorted(int(c) for c in np.unique(labels) if c >= 0)
+    if not clusters:
+        return {}
+
+    docs: List[str] = []
+    for c in clusters:
+        idx = np.where(labels == c)[0]
+        docs.append(" ".join(texts[i] for i in idx))
+
+    vec = TfidfVectorizer(
+        lowercase=True,
+        stop_words="english",
+        ngram_range=(1, 1),
+        token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z]+\b",
+        max_features=int(max_features),
+        min_df=int(min_df),
+    )
+    X = vec.fit_transform(docs)  # (n_clusters, n_terms)
+    terms = np.asarray(vec.get_feature_names_out())
+
+    out: dict[int, List[str]] = {}
+    for row_i, c in enumerate(clusters):
+        row = X.getrow(row_i)
+        if row.nnz == 0:
+            out[c] = []
+            continue
+        order = np.argsort(-row.data)[: int(top_k)]
+        out[c] = [str(terms[row.indices[j]]) for j in order]
+    return out
+
+
 def kde2d_on_grid(
     xy: np.ndarray,
     gridsize: int = 220,
     bandwidth: Optional[float] = None,
     pad_frac: float = 0.06,
+    scott: bool = False
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Fit a 2D Gaussian KDE over points `xy` and evaluate it on a regular grid.
@@ -121,16 +168,27 @@ def kde2d_on_grid(
     Returns (xs, ys, Z) where xs/ys are 1D grid coordinates and Z is a (len(ys), len(xs)) density array.
     """
     xy = np.asarray(xy, dtype=np.float64)
-    xy = xy[np.isfinite(xy).all(axis=1)]
+    xy = xy[np.isfinite(xy).all(axis=1)] # Removes any NaN values
     if xy.shape[0] == 0:
         raise ValueError("Cannot compute KDE: no finite 2D points.")
 
-    if bandwidth is None:
+    if scott:
+        n = xy.shape[0]
+        d = 2
+        stds = np.std(xy, axis=0)
+        sigma = np.mean(stds)
+        bandwidth = sigma * (n ** (-1.0 / (d + 4)))
+
+    elif bandwidth is None:
         scale = float(np.mean(np.std(xy, axis=0)))
         bandwidth = max(0.15 * scale, 1e-3)
 
+        # Standard dev: Idea of how spread out the points are vertically and horizontally
+        # Averages the 2 standard devs
+        # Goal: make bandwidth proportional to how big the embedding space is
+
     x_min, x_max = float(xy[:, 0].min()), float(xy[:, 0].max())
-    y_min, y_max = float(xy[:, 1].min()), float(xy[:, 1].max())
+    y_min, y_max = float(xy[: , 1].min()), float(xy[:, 1].max())
     x_pad = (x_max - x_min) * pad_frac if x_max > x_min else 1.0
     y_pad = (y_max - y_min) * pad_frac if y_max > y_min else 1.0
 
@@ -153,7 +211,8 @@ def main():
     p.add_argument("--model", default="allenai/specter")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--cluster", choices=["hdbscan", "none"], default="hdbscan")
-    p.add_argument("--min-cluster-size", type=int, default=25)
+    p.add_argument("--min-cluster-size", type=int, default=10)
+    p.add_argument("--cluster-top-terms", type=int, default=3, help="How many terms to label each cluster with.")
     p.add_argument(
         "--kde",
         action=argparse.BooleanOptionalAction,
@@ -202,6 +261,13 @@ def main():
     df["y"] = xy[:, 1]
     df["cluster"] = labels
 
+    # Cluster labels: top TF-IDF terms per cluster (shown in hover + plotted at centroids)
+    cluster_terms = cluster_top_terms_tfidf(texts, labels, top_k=args.cluster_top_terms)
+    cluster_label_map: dict[int, str] = {
+        int(c): (" • ".join(ts) if ts else f"cluster {int(c)}") for c, ts in cluster_terms.items()
+    }
+    df["cluster_label"] = df["cluster"].map(lambda c: "noise" if int(c) < 0 else cluster_label_map.get(int(c), f"cluster {int(c)}"))
+
     # Bridge paper between two largest clusters
     bridge = None
     two = pick_two_largest_clusters(labels)
@@ -242,7 +308,7 @@ def main():
     np.save(os.path.join(args.outdir, "embeddings_v2.npy"), emb)
 
     # Plot
-    hover = ["pmid", "year", "journal", "title", "cluster", "is_bridge", "bridge_keywords"]
+    hover = ["pmid", "year", "journal", "title", "cluster", "cluster_label", "is_bridge", "bridge_keywords"]
     fig = px.scatter(
         df,
         x="x",
@@ -252,6 +318,27 @@ def main():
         title=f"PubMed abstracts: {args.model}",
         opacity=0.75,
     )
+
+    # Red centroid markers + labels for each cluster (in 2D UMAP space)
+    centroids = (
+        df[df["cluster"] >= 0]
+        .groupby("cluster", as_index=False)[["x", "y"]]
+        .mean()
+        .sort_values("cluster")
+        .reset_index(drop=True)
+    )
+    if len(centroids) > 0:
+        centroids["cluster_label"] = centroids["cluster"].map(lambda c: cluster_label_map.get(int(c), f"cluster {int(c)}"))
+        fig.add_scatter(
+            x=centroids["x"],
+            y=centroids["y"],
+            mode="markers+text",
+            marker=dict(size=14, symbol="x", color="red", line=dict(width=2, color="red")),
+            text=centroids["cluster_label"],
+            textposition="top center",
+            textfont=dict(color="red"),
+            name="cluster centroids",
+        )
 
     if args.kde:
         xs, ys, Z = kde2d_on_grid(xy, gridsize=args.kde_grid, bandwidth=args.kde_bandwidth)
@@ -281,7 +368,7 @@ def main():
             name="bridge",
             text=bridge_df["title"],
         )
-    out_html = os.path.join(args.outdir, "plot_v2.html")
+    out_html = os.path.join(args.outdir, "plot_v4_cluster_leaf.html")
     fig.write_html(out_html, include_plotlyjs="cdn")
 
     print(f"Wrote:\n- {out_csv}\n- {out_html}\n- {os.path.join(args.outdir, 'embeddings_v2.npy')}")
