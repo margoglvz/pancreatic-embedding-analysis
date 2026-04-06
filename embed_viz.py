@@ -28,17 +28,14 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import umap
+import hdbscan
 from keybert import KeyBERT
 from sentence_transformers import SentenceTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.decomposition import PCA
 from sklearn.neighbors import KernelDensity
-
-try:
-    import hdbscan
-except Exception:  # pragma: no cover
-    hdbscan = None
-
+from sklearn.mixture import GaussianMixture
 
 @dataclass
 class BridgeResult:
@@ -70,11 +67,59 @@ def reduce_umap(emb: np.ndarray, n_neighbors: int = 20, min_dist: float = 0.05, 
     return reducer.fit_transform(emb)
 
 
-def cluster_hdbscan(emb: np.ndarray, min_cluster_size: int = 10, min_samples: int = 1) -> np.ndarray:
+def cluster_hdbscan(emb: np.ndarray, min_cluster_size: int = 12, min_samples: int = 1) -> np.ndarray:
     if hdbscan is None:
         raise RuntimeError("hdbscan is not installed. Install it or use --cluster none.")
-    clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size, min_samples=min_samples, metric="euclidean", cluster_selection_method="leaf")
-    return clusterer.fit_predict(emb)
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        metric="euclidean",
+        cluster_selection_method="leaf",
+    )
+    labels = clusterer.fit_predict(emb)
+    probs = getattr(clusterer, "probabilities_", None)
+    if probs is None:
+        print("DEBUG: Probs is None")
+        probs = np.ones_like(labels, dtype=float)
+    return np.asarray(labels, dtype=int), np.asarray(probs, dtype=float)
+
+
+def cluster_gmm(
+    emb: np.ndarray,
+    n_components: int = 20,
+    covariance_type: str = "diag",
+    reg_covar: float = 1e-6,
+    max_iter: int = 400,
+    n_init: int = 1,
+    random_state: int = 42,
+    pca_dim: int = 500,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Cluster embeddings with a Gaussian Mixture Model.
+
+    Returns (labels, probs) where probs is the per-point max posterior probability.
+    """
+    X = np.asarray(emb, dtype=np.float32)
+    if pca_dim and pca_dim > 0 and X.ndim == 2 and X.shape[1] > pca_dim: # Help make it less high-dimensional for GMM
+        n = int(X.shape[0])
+        d = int(X.shape[1])
+        print("d=dimensions:", d)
+        ncomp = max(2, min(int(pca_dim), d, n - 1))
+        if ncomp < d:
+            X = PCA(n_components=ncomp, random_state=int(random_state)).fit_transform(X)
+
+    gmm = GaussianMixture(
+        n_components=int(n_components),
+        covariance_type=str(covariance_type),
+        reg_covar=float(reg_covar),
+        max_iter=int(max_iter),
+        n_init=int(n_init),
+        random_state=int(random_state),
+    )
+    labels = gmm.fit_predict(X)
+    probs = gmm.predict_proba(X).max(axis=1)
+    bic = gmm.bic(X)
+    return np.asarray(labels, dtype=int), np.asarray(probs, dtype=float), bic
 
 
 def pick_two_largest_clusters(labels: np.ndarray) -> Optional[tuple[int, int]]:
@@ -138,8 +183,8 @@ def cluster_top_terms_tfidf(
         stop_words="english",
         ngram_range=(1, 1),
         token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z]+\b",
-        max_features=int(max_features),
-        min_df=int(min_df),
+        max_features=int(max_features), # Caps vocabulary size
+        min_df=int(min_df), # Drops very rare words
     )
     X = vec.fit_transform(docs)  # (n_clusters, n_terms)
     terms = np.asarray(vec.get_feature_names_out())
@@ -210,8 +255,7 @@ def main():
     p.add_argument("--text-col", default="abstract")
     p.add_argument("--model", default="allenai/specter")
     p.add_argument("--batch-size", type=int, default=32)
-    p.add_argument("--cluster", choices=["hdbscan", "none"], default="hdbscan")
-    p.add_argument("--min-cluster-size", type=int, default=10)
+    p.add_argument("--cluster", choices=["hdbscan", "gmm", "none"], default="gmm")
     p.add_argument("--cluster-top-terms", type=int, default=3, help="How many terms to label each cluster with.")
     p.add_argument(
         "--kde",
@@ -253,13 +297,15 @@ def main():
     xy = reduce_umap(emb)
 
     if args.cluster == "hdbscan":
-        labels = cluster_hdbscan(emb, min_cluster_size=args.min_cluster_size)
-    else:
-        labels = np.full(len(df), -1, dtype=int)
+        # labels = cluster_hdbscan(emb, min_cluster_size=args.min_cluster_size)
+        labels, cluster_prob = cluster_hdbscan(emb)
+    elif args.cluster == "gmm":
+        labels, cluster_prob, bic = cluster_gmm(emb)
 
     df["x"] = xy[:, 0]
     df["y"] = xy[:, 1]
     df["cluster"] = labels
+    df["cluster_prob"] = cluster_prob
 
     # Cluster labels: top TF-IDF terms per cluster (shown in hover + plotted at centroids)
     cluster_terms = cluster_top_terms_tfidf(texts, labels, top_k=args.cluster_top_terms)
@@ -308,7 +354,7 @@ def main():
     np.save(os.path.join(args.outdir, "embeddings_v2.npy"), emb)
 
     # Plot
-    hover = ["pmid", "year", "journal", "title", "cluster", "cluster_label", "is_bridge", "bridge_keywords"]
+    hover = ["pmid", "year", "journal", "title", "cluster", "cluster_label", "cluster_prob", "is_bridge", "bridge_keywords"]
     fig = px.scatter(
         df,
         x="x",
@@ -317,6 +363,17 @@ def main():
         hover_data=hover,
         title=f"PubMed abstracts: {args.model}",
         opacity=0.75,
+    )
+
+    fig.add_annotation(
+        text=f"BIC: {bic:.2f}",
+        xref="paper",
+        yref="paper",
+        x=0.99,
+        y=0.01,
+        showarrow=False,
+        font=dict(size=14, color="black"),
+        align="right"
     )
 
     # Red centroid markers + labels for each cluster (in 2D UMAP space)
@@ -368,7 +425,7 @@ def main():
             name="bridge",
             text=bridge_df["title"],
         )
-    out_html = os.path.join(args.outdir, "plot_v4_cluster_leaf.html")
+    out_html = os.path.join(args.outdir, "plot_v5_gmm13.html") # CHANGE FILEPATH HERE
     fig.write_html(out_html, include_plotlyjs="cdn")
 
     print(f"Wrote:\n- {out_csv}\n- {out_html}\n- {os.path.join(args.outdir, 'embeddings_v2.npy')}")
