@@ -2,7 +2,7 @@
 Embed abstracts, reduce to 2D, cluster, and export an interactive plot.
 
 Usage:
-  python embed_viz.py --in data/pubmed_pancreatic_cancer.csv --text-col abstract --outdir outputs
+  python embed_viz.py --in data/pubmed_pancreatic_cancer_v2.csv --model sentence-transformers/allenai-specter2 --outdir outputs                                         
 
 Default embedding model:
   - "allenai/specter" (great for scientific paper similarity; SentenceTransformers-compatible)
@@ -12,8 +12,7 @@ Alternatives:
 
 Note on SPECTER2:
   - "allenai/specter2" is not a SentenceTransformers-packaged model, and may require a custom
-    Transformers loading pipeline. If you want SPECTER2 specifically, start with "allenai/specter"
-    first to validate your pipeline.
+    Transformers loading pipeline.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ import umap
 import hdbscan
 from keybert import KeyBERT
 from sentence_transformers import SentenceTransformer
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer, ENGLISH_STOP_WORDS
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.decomposition import PCA
 from sklearn.neighbors import KernelDensity
@@ -43,6 +42,10 @@ class BridgeResult:
     cluster_a: int
     cluster_b: int
     score: float
+
+# =========================
+# EMBEDDINGS AND UMAP
+# =========================
 
 
 def embed_texts(texts: List[str], model_name: str, batch_size: int = 32) -> np.ndarray:
@@ -65,6 +68,10 @@ def reduce_umap(emb: np.ndarray, n_neighbors: int = 20, min_dist: float = 0.05, 
         random_state=random_state,
     )
     return reducer.fit_transform(emb)
+
+# =========================
+# CLUSTER HELPERS
+# =========================
 
 
 def cluster_hdbscan(emb: np.ndarray, min_cluster_size: int = 12, min_samples: int = 1) -> np.ndarray:
@@ -100,13 +107,13 @@ def cluster_gmm(
     Returns (labels, probs) where probs is the per-point max posterior probability.
     """
     X = np.asarray(emb, dtype=np.float32)
-    if pca_dim and pca_dim > 0 and X.ndim == 2 and X.shape[1] > pca_dim: # Help make it less high-dimensional for GMM
-        n = int(X.shape[0])
-        d = int(X.shape[1])
-        print("d=dimensions:", d)
-        ncomp = max(2, min(int(pca_dim), d, n - 1))
-        if ncomp < d:
-            X = PCA(n_components=ncomp, random_state=int(random_state)).fit_transform(X)
+    # if pca_dim and pca_dim > 0 and X.ndim == 2 and X.shape[1] > pca_dim: # Help make it less high-dimensional for GMM
+    #     n = int(X.shape[0])
+    #     d = int(X.shape[1])
+    #     print("d=dimensions:", d)
+    #     ncomp = max(2, min(int(pca_dim), d, n - 1))
+    #     if ncomp < d:
+    #         X = PCA(n_components=ncomp, random_state=int(random_state)).fit_transform(X)
 
     gmm = GaussianMixture(
         n_components=int(n_components),
@@ -154,6 +161,28 @@ def keywords_for_texts(texts: List[str], top_n: int = 8) -> List[List[str]]:
         out.append([p[0] for p in pairs])
     return out
 
+# =========================
+# TEXT PROCESSING HELPERS
+# =========================
+
+
+def get_global_top_words(texts, top_k=50):
+    vec = TfidfVectorizer(
+        lowercase=True,
+        stop_words="english",
+        token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z]+\b"
+    )
+    
+    X = vec.fit_transform(texts)  # (n_docs, n_terms)
+    terms = np.array(vec.get_feature_names_out())
+    
+    # Sum TF-IDF scores across all documents
+    scores = np.asarray(X.sum(axis=0)).ravel()
+    
+    # Get top words
+    top_indices = np.argsort(-scores)[:top_k]
+    return list(terms[top_indices])
+
 
 def cluster_top_terms_tfidf(
     texts: List[str],
@@ -169,7 +198,7 @@ def cluster_top_terms_tfidf(
     vectorizer across those cluster-documents, and return top_k highest-scoring terms per cluster.
     """
     labels = np.asarray(labels, dtype=int)
-    clusters = sorted(int(c) for c in np.unique(labels) if c >= 0)
+    clusters = sorted(int(c) for c in np.unique(labels) if c >= 0) # removes noise if any
     if not clusters:
         return {}
 
@@ -178,9 +207,12 @@ def cluster_top_terms_tfidf(
         idx = np.where(labels == c)[0]
         docs.append(" ".join(texts[i] for i in idx))
 
+    global_top_words = get_global_top_words(texts)
+    custom_stop_words = list(set(ENGLISH_STOP_WORDS)) + global_top_words
+
     vec = TfidfVectorizer(
         lowercase=True,
-        stop_words="english",
+        stop_words=custom_stop_words,
         ngram_range=(1, 1),
         token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z]+\b",
         max_features=int(max_features), # Caps vocabulary size
@@ -199,6 +231,9 @@ def cluster_top_terms_tfidf(
         out[c] = [str(terms[row.indices[j]]) for j in order]
     return out
 
+# =========================
+# DENSITY ESTIMATION
+# =========================
 
 def kde2d_on_grid(
     xy: np.ndarray,
@@ -248,11 +283,14 @@ def kde2d_on_grid(
     Z = np.exp(log_d).reshape(len(ys), len(xs))
     return xs, ys, Z
 
+# =========================
+# MAIN
+# =========================
 
 def main():
+    EMBEDDINGS_PATH = "embeddings_v3.npy" # v3 with mean pooling
     p = argparse.ArgumentParser()
     p.add_argument("--in", dest="inp", default="data/pubmed_pancreatic_cancer_v2.csv")
-    p.add_argument("--text-col", default="abstract")
     p.add_argument("--model", default="allenai/specter")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--cluster", choices=["hdbscan", "gmm", "none"], default="gmm")
@@ -277,11 +315,14 @@ def main():
 
     os.makedirs(args.outdir, exist_ok=True)
     df = pd.read_csv(args.inp)
-    df = df.dropna(subset=[args.text_col]).reset_index(drop=True)
-    texts = df[args.text_col].astype(str).tolist()
+    df = df.dropna(subset=["title", "abstract"], how="all").reset_index(drop=True)
+    texts = (
+        "Title: " + df["title"].fillna("") +
+        " Abstract: " + df["abstract"].fillna("")
+    ).tolist()
 
     # Check if embeddings already exist (cache)
-    emb_path = os.path.join(args.outdir, "embeddings_v2.npy")
+    emb_path = os.path.join(args.outdir, EMBEDDINGS_PATH)
     if os.path.exists(emb_path):
         print(f"Loading cached embeddings from {emb_path}")
         emb = np.load(emb_path)
@@ -351,7 +392,7 @@ def main():
     # Save artifacts
     out_csv = os.path.join(args.outdir, "embedded_2d_v2.csv")
     df.to_csv(out_csv, index=False)
-    np.save(os.path.join(args.outdir, "embeddings_v2.npy"), emb)
+    np.save(os.path.join(args.outdir, EMBEDDINGS_PATH), emb)
 
     # Plot
     hover = ["pmid", "year", "journal", "title", "cluster", "cluster_label", "cluster_prob", "is_bridge", "bridge_keywords"]
@@ -375,27 +416,6 @@ def main():
         font=dict(size=14, color="black"),
         align="right"
     )
-
-    # Red centroid markers + labels for each cluster (in 2D UMAP space)
-    centroids = (
-        df[df["cluster"] >= 0]
-        .groupby("cluster", as_index=False)[["x", "y"]]
-        .mean()
-        .sort_values("cluster")
-        .reset_index(drop=True)
-    )
-    if len(centroids) > 0:
-        centroids["cluster_label"] = centroids["cluster"].map(lambda c: cluster_label_map.get(int(c), f"cluster {int(c)}"))
-        fig.add_scatter(
-            x=centroids["x"],
-            y=centroids["y"],
-            mode="markers+text",
-            marker=dict(size=14, symbol="x", color="red", line=dict(width=2, color="red")),
-            text=centroids["cluster_label"],
-            textposition="top center",
-            textfont=dict(color="red"),
-            name="cluster centroids",
-        )
 
     if args.kde:
         xs, ys, Z = kde2d_on_grid(xy, gridsize=args.kde_grid, bandwidth=args.kde_bandwidth)
@@ -421,14 +441,37 @@ def main():
             x=bridge_df["x"],
             y=bridge_df["y"],
             mode="markers",
-            marker=dict(size=14, symbol="x", color="black"),
+            marker=dict(size=14, symbol="x", color="red"),
             name="bridge",
             text=bridge_df["title"],
         )
-    out_html = os.path.join(args.outdir, "plot_v5_gmm13.html") # CHANGE FILEPATH HERE
+
+    # Black centroid markers + labels for each cluster (in 2D UMAP space)
+    centroids = (
+        df[df["cluster"] >= 0]
+        .groupby("cluster", as_index=False)[["x", "y"]]
+        .mean()
+        .sort_values("cluster")
+        .reset_index(drop=True)
+    )
+    if len(centroids) > 0:
+        centroids["cluster_label"] = centroids["cluster"].map(lambda c: cluster_label_map.get(int(c), f"cluster {int(c)}"))
+
+        fig.add_scatter(
+            x=centroids["x"],
+            y=centroids["y"],
+            mode="markers+text",
+            marker=dict(size=14, symbol="x", color="black", line=dict(width=2, color="black")),
+            text=centroids["cluster_label"],
+            textposition="top center",
+            textfont=dict(color="black"),
+            name="cluster centroids",
+        )
+
+    out_html = os.path.join(args.outdir, "plot_v6_label4.html") # CHANGE PLOT NAME HERE
     fig.write_html(out_html, include_plotlyjs="cdn")
 
-    print(f"Wrote:\n- {out_csv}\n- {out_html}\n- {os.path.join(args.outdir, 'embeddings_v2.npy')}")
+    print(f"Wrote:\n- {out_csv}\n- {out_html}\n- {os.path.join(args.outdir, EMBEDDINGS_PATH)}")
 
 
 if __name__ == "__main__":
