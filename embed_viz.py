@@ -457,15 +457,43 @@ def main():
     if len(centroids) > 0:
         centroids["cluster_label"] = centroids["cluster"].map(lambda c: cluster_label_map.get(int(c), f"cluster {int(c)}"))
 
+        # fig.add_scatter(
+        #     x=centroids["x"],
+        #     y=centroids["y"],
+        #     mode="markers+text",
+        #     marker=dict(size=14, symbol="x", color="black", line=dict(width=2, color="black")),
+        #     text=centroids["cluster_label"],
+        #     textposition="top center",
+        #     textfont=dict(color="black"),
+        #     name="cluster centroids",
+        # )
+
+        for _, row in centroids.iterrows():
+            fig.add_annotation(
+                x=row["x"],
+                y=row["y"],
+                text=row["cluster_label"],
+                showarrow=False,
+                yshift=14,
+                font=dict(size=10, color="black"),
+                bgcolor="rgba(255,255,255,0.85)",
+                bordercolor="rgba(0,0,0,0.15)",
+                borderwidth=1,
+            )
+
+        # 1) marker trace
         fig.add_scatter(
             x=centroids["x"],
             y=centroids["y"],
-            mode="markers+text",
-            marker=dict(size=14, symbol="x", color="black", line=dict(width=2, color="black")),
-            text=centroids["cluster_label"],
-            textposition="top center",
-            textfont=dict(color="black"),
+            mode="markers",
+            marker=dict(
+                size=14,
+                symbol="x",
+                color="black",
+                line=dict(width=2, color="black"),
+            ),
             name="cluster centroids",
+            showlegend=True,
         )
 
     out_html = os.path.join(args.outdir, "plot_v6_label4.html") # CHANGE PLOT NAME HERE
