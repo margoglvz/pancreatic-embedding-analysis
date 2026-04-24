@@ -35,6 +35,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.decomposition import PCA
 from sklearn.neighbors import KernelDensity
 from sklearn.mixture import GaussianMixture
+from collections import Counter
 
 @dataclass
 class BridgeResult:
@@ -106,6 +107,7 @@ def cluster_gmm(
 
     Returns (labels, probs) where probs is the per-point max posterior probability.
     """
+    print("Starting GMM clustering...")
     X = np.asarray(emb, dtype=np.float32)
     # if pca_dim and pca_dim > 0 and X.ndim == 2 and X.shape[1] > pca_dim: # Help make it less high-dimensional for GMM
     #     n = int(X.shape[0])
@@ -126,6 +128,7 @@ def cluster_gmm(
     labels = gmm.fit_predict(X)
     probs = gmm.predict_proba(X).max(axis=1)
     bic = gmm.bic(X)
+    print("Finished GMM clustering!")
     return np.asarray(labels, dtype=int), np.asarray(probs, dtype=float), bic
 
 
@@ -162,11 +165,10 @@ def keywords_for_texts(texts: List[str], top_n: int = 8) -> List[List[str]]:
     return out
 
 # =========================
-# TEXT PROCESSING HELPERS
+# CLUSTER TOP TERMS
 # =========================
 
-
-def get_global_top_words(texts, top_k=50):
+def get_global_top_words(texts, top_k=100):
     vec = TfidfVectorizer(
         lowercase=True,
         stop_words="english",
@@ -181,6 +183,8 @@ def get_global_top_words(texts, top_k=50):
     
     # Get top words
     top_indices = np.argsort(-scores)[:top_k]
+
+    print("Finished gathering top global words in titles + abstracts...")
     return list(terms[top_indices])
 
 
@@ -229,10 +233,137 @@ def cluster_top_terms_tfidf(
             continue
         order = np.argsort(-row.data)[: int(top_k)]
         out[c] = [str(terms[row.indices[j]]) for j in order]
+
+    print("Assigned labels for each cluster...")
     return out
 
+def get_top_cancer_terms(
+        texts: List[str],
+        labels: np.ndarray,
+):
+    cluster_counts = {}
+
+
+    cancer_terms = {
+        "Adenocarcinoma": {
+            "category": "Exocrine",
+            "matches": [
+                "ductal adenocarcinoma",
+                "pancreatic ductal adenocarcinoma",
+                "ductal carcinoma",
+                "pdac"
+            ],
+            "description": "Accounts for 90 percent of pancreatic cancer, cancer occurs in the lining of the ducts in the pancreas"
+        },
+        "Acinar Cell Carcinoma": {
+            "category": "Exocrine",
+            "matches": [
+                "acinar cell carcinoma",
+                "pancreatic acinar cell carcinoma",
+                "acc"
+            ],
+            "description": "Accounts for 1-2 percent of exocrine pancreatic cancers that is created from pancreatic enzymes, similar symptoms of adenocarcinoma."
+        },
+        "Squamous Cell Carcinoma": {
+            "category": "Exocrine",
+            "matches": [
+                "epidermoid carcinoma of the pancreas"
+            ],
+            "description": "Extremely rare cancer that forms in the pancreatic ducts and made purely from squamous cells, poor prognosis, not enough reported cases to be fully understood."
+        },
+        "Adenosquamous Carcinoma": {
+            "category": "Exocrine",
+            "matches": [
+                "PASC",
+                "adenoacanthoma"
+            ],
+            "description": "Represents 1-4 percent of exocrine pancreatic cancers, more aggressive tumor, shows characteristics of both ductal adenocarcinoma and squamous cell carcinoma."
+        },
+        "Colloid Carcinoma": {
+            "category": "Exocrine",
+            "matches": [
+                "mucinous carcinoma"
+            ],
+            "description": "Accounts for 1-3 percent of exocrine pancreatic cancer, tend to develop from a type of benign cyst called an intraductal papillary mucinous neoplasm, easier to treat."
+        },
+        "Pancreatic Neuroendocrine Tumor": {
+            "category": "Neuroendocrine",
+            "matches": [
+                "pancreatic neuroendocrine tumor",
+                "pancreatic neuroendocrine tumors",
+                "neuroendocrine tumor",
+                "neuroendocrine tumors",
+                "islet cell tumor",
+                "islet cell tumors",
+                "net"
+            ],
+            "description": "Accounts for less than 5 percent of pancreatic cancer cases, develops from cells in the endocrine gland of the pancreas."
+        },
+        "IPMN": {
+            "category": "Precursor",
+            "matches": [
+                "ipmn",
+                "intraductal papillary mucinous neoplasm",
+                "intraductal papillary-mucinous neoplasm",
+                "intraductal papillary mucinous neoplasms"
+            ],
+            "description": "A mucin-producing precursor lesion in the pancreatic ducts that can progress to invasive cancer."
+        },
+        "Mucinous Neoplasm": {
+            "category": "Precursor",
+            "matches": [
+                "mucinous neoplasms"
+            ],
+            "description": "Tumor characterized by the production of large amounts of mucin (a jelly-like protein substance)"
+        },
+        "Pancreatic Cyst": {
+            "category": "Precursor",
+            "matches": [
+                "cyst",
+                "cysts",
+                "pancreatic cyst",
+                "pancreatic cysts"
+            ],
+            "description": "A fluid-filled lesion in or on the pancreas, some of which are benign can can turn into a malignant tumor."
+        }
+    }
+
+    labels = np.asarray(labels, dtype=int)
+    clusters = sorted(int(c) for c in np.unique(labels) if c >= 0) # removes noise if any
+    if not clusters:
+        return {}
+    
+    for c in clusters:
+        cluster_term_counts = Counter()
+        cluster_category_counts = Counter()
+
+        idx = np.where(labels == c)[0] # This gets all the 'texts' indexes of the Titles + Abstracts in each respective cluster_id
+
+        for i in idx:
+            paper = texts[i].lower()
+
+            for key in cancer_terms:
+                if key.lower() in paper:
+                    cluster_term_counts[key] += 1
+                    cluster_category_counts[cancer_terms[key]["category"]] += 1
+
+                for match in cancer_terms[key]["matches"]:
+                    if match in paper:
+                        cluster_term_counts[key] += 1
+                        cluster_category_counts[cancer_terms[key]["category"]] += 1
+
+        cluster_counts[c] = {
+            "top_terms": cluster_term_counts.most_common(3),
+            "top_categories": cluster_category_counts.most_common(3)
+        }
+                    
+    print(cluster_counts)
+    return cluster_counts, cancer_terms
+
+
+
 # =========================
-# DENSITY ESTIMATION
+# VISUALIZATION (DENSITY ESTIMATION, TOP TERMS)
 # =========================
 
 def kde2d_on_grid(
@@ -282,6 +413,26 @@ def kde2d_on_grid(
     log_d = kde.score_samples(grid)
     Z = np.exp(log_d).reshape(len(ys), len(xs))
     return xs, ys, Z
+
+def make_cluster_hover_text(cluster_id, cluster_counts, cancer_terms):
+    info = cluster_counts.get(cluster_id, {})
+    top_categories = info.get("top_categories", [])
+    top_terms = info.get("top_terms", [])
+
+    lines = [f"<b>Cluster {cluster_id}</b>"]
+
+    if top_categories:
+        lines.append("<br><b>Top Categories:</b>")
+        for cat, count in top_categories:
+            lines.append(f"{cat}: {count}")
+
+    if top_terms:
+        lines.append("<br><b>Top Terms:</b>")
+        for term, count in top_terms:
+            desc = cancer_terms[term]["description"]
+            lines.append(f"{term}: {count}<br><i>{desc}</i>")
+
+    return "<br>".join(lines)
 
 # =========================
 # MAIN
@@ -355,6 +506,9 @@ def main():
     }
     df["cluster_label"] = df["cluster"].map(lambda c: "noise" if int(c) < 0 else cluster_label_map.get(int(c), f"cluster {int(c)}"))
 
+    # Find top cancer terms in each cluster
+    cluster_counts, cancer_terms = get_top_cancer_terms(texts, labels)
+
     # Bridge paper between two largest clusters
     bridge = None
     two = pick_two_largest_clusters(labels)
@@ -384,10 +538,10 @@ def main():
         balance = 1.0 - np.abs(s_to_a - s_to_b)
         candidate = np.argsort(-balance)[:12]
 
-        kw_texts = [texts[i] for i in candidate]
-        kws = keywords_for_texts(kw_texts, top_n=6)
-        for i, kk in zip(candidate, kws):
-            df.loc[i, "bridge_keywords"] = ", ".join(kk)
+        # kw_texts = [texts[i] for i in candidate]
+        # kws = keywords_for_texts(kw_texts, top_n=6)
+        # for i, kk in zip(candidate, kws):
+        #     df.loc[i, "bridge_keywords"] = ", ".join(kk)
 
     # Save artifacts
     out_csv = os.path.join(args.outdir, "embedded_2d_v2.csv")
@@ -454,19 +608,16 @@ def main():
         .sort_values("cluster")
         .reset_index(drop=True)
     )
-    if len(centroids) > 0:
-        centroids["cluster_label"] = centroids["cluster"].map(lambda c: cluster_label_map.get(int(c), f"cluster {int(c)}"))
 
-        # fig.add_scatter(
-        #     x=centroids["x"],
-        #     y=centroids["y"],
-        #     mode="markers+text",
-        #     marker=dict(size=14, symbol="x", color="black", line=dict(width=2, color="black")),
-        #     text=centroids["cluster_label"],
-        #     textposition="top center",
-        #     textfont=dict(color="black"),
-        #     name="cluster centroids",
-        # )
+
+    if len(centroids) > 0:
+        centroids["cluster_label"] = centroids["cluster"].map(
+            lambda c: cluster_label_map.get(int(c), f"cluster {int(c)}")
+        )
+
+        centroids["hover_text"] = centroids["cluster"].apply(
+            lambda c: make_cluster_hover_text(c, cluster_counts, cancer_terms)
+        )
 
         for _, row in centroids.iterrows():
             fig.add_annotation(
@@ -494,9 +645,11 @@ def main():
             ),
             name="cluster centroids",
             showlegend=True,
+            hovertext=centroids["hover_text"],
+            hoverinfo="text",
         )
 
-    out_html = os.path.join(args.outdir, "plot_v6_label4.html") # CHANGE PLOT NAME HERE
+    out_html = os.path.join(args.outdir, "plot_v7_noadenocarcinoma.html") # CHANGE PLOT NAME HERE
     fig.write_html(out_html, include_plotlyjs="cdn")
 
     print(f"Wrote:\n- {out_csv}\n- {out_html}\n- {os.path.join(args.outdir, EMBEDDINGS_PATH)}")
