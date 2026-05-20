@@ -103,11 +103,57 @@ def fetch_records(pmids: List[str], batch_size: int = 200, sleep_s: float = 0.34
 
 def main():
     p = argparse.ArgumentParser()
-    query = '("Pancreatic Neoplasms"[MeSH] OR "pancreatic cancer"[Title/Abstract] OR "pancreatic adenocarcinoma"[Title/Abstract] OR "pancreatic ductal adenocarcinoma"[Title/Abstract] OR PDAC[Title/Abstract] )'
+    query = """
+    (
+        "Pancreatic Neoplasms"[MeSH Terms]
+        OR "pancreatic cancer"[Title/Abstract]
+        OR "pancreatic neoplasm"[Title/Abstract]
+        OR "pancreatic neoplasms"[Title/Abstract]
+        OR "pancreatic tumor"[Title/Abstract]
+        OR "pancreatic tumors"[Title/Abstract]
+
+        OR "pancreatic adenocarcinoma"[Title/Abstract]
+        OR "ductal adenocarcinoma"[Title/Abstract]
+        OR "pancreatic ductal adenocarcinoma"[Title/Abstract]
+        OR "ductal carcinoma"[Title/Abstract]
+        OR PDAC[Title/Abstract]
+
+    )
+    """
+
+    
+        # OR "pancreatic acinar cell carcinoma"[Title/Abstract]
+
+        # OR "pancreatic adenosquamous carcinoma"[Title/Abstract]
+        # OR "PASC"[Title/Abstract]
+
+        # OR "squamous cell carcinoma"[Title/Abstract]
+        # OR "epidermoid carcinoma of the pancreas"[Title/Abstract]
+
+        # OR "colloid carcinoma"[Title/Abstract]
+        # OR "mucinous carcinoma"[Title/Abstract]
+
+        # OR "pancreatic neuroendocrine tumor"[Title/Abstract]
+        # OR "pancreatic neuroendocrine tumors"[Title/Abstract]
+        # OR "neuroendocrine tumor"[Title/Abstract]
+        # OR "neuroendocrine tumors"[Title/Abstract]
+        # OR "islet cell tumor"[Title/Abstract]
+        # OR "islet cell tumors"[Title/Abstract]
+
+        # OR IPMN[Title/Abstract]
+        # OR "intraductal papillary mucinous neoplasm"[Title/Abstract]
+        # OR "intraductal papillary mucinous neoplasms"[Title/Abstract]
+        # OR "intraductal papillary-mucinous neoplasm"[Title/Abstract]
+
+        # OR "pancreatic mucinous neoplasm"[Title/Abstract]
+        # OR "pancreatic mucinous neoplasms"[Title/Abstract]
+
+        # OR "pancreatic cyst"[Title/Abstract]
+        # OR "pancreatic cysts"[Title/Abstract]
     p.add_argument("--term", default=query)
     p.add_argument("--retmax", type=int, default=5000)
     p.add_argument("--batch-size", type=int, default=200)
-    p.add_argument("--out", default="data/pubmed_pancreatic_cancer_v2.csv")
+    p.add_argument("--out", default="data/pubmed_pancreatic_cancer_v4.csv")
     p.add_argument("--email", default=os.environ.get("NCBI_EMAIL", "msgalvez@uci.edu"))
     p.add_argument("--api-key", default=os.environ.get("NCBI_API_KEY"))
     args = p.parse_args()

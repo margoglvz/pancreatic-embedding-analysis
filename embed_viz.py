@@ -2,7 +2,7 @@
 Embed abstracts, reduce to 2D, cluster, and export an interactive plot.
 
 Usage:
-  python embed_viz.py --in data/pubmed_pancreatic_cancer_v2.csv --model sentence-transformers/allenai-specter2 --outdir outputs                                         
+  python embed_viz.py --in data/pubmed_pancreatic_cancer_v3.csv --model sentence-transformers/allenai-specter2 --outdir outputs                                         
 
 Default embedding model:
   - "allenai/specter" (great for scientific paper similarity; SentenceTransformers-compatible)
@@ -274,8 +274,7 @@ def get_top_cancer_terms(
         "Adenosquamous Carcinoma": {
             "category": "Exocrine",
             "matches": [
-                "PASC",
-                "adenoacanthoma"
+                "PASC"
             ],
             "description": "Represents 1-4 percent of exocrine pancreatic cancers, more aggressive tumor, shows characteristics of both ductal adenocarcinoma and squamous cell carcinoma."
         },
@@ -357,7 +356,7 @@ def get_top_cancer_terms(
             "top_categories": cluster_category_counts.most_common(3)
         }
                     
-    print(cluster_counts)
+    print("Finished writing cluster summary...")
     return cluster_counts, cancer_terms
 
 
@@ -439,9 +438,10 @@ def make_cluster_hover_text(cluster_id, cluster_counts, cancer_terms):
 # =========================
 
 def main():
-    EMBEDDINGS_PATH = "embeddings_v3.npy" # v3 with mean pooling
+    EMBEDDINGS_PATH = "embeddings_v7.npy" # v3 with mean pooling
+    PLOT_NAME = "plot_v8_alladenocarcinoma.html"
     p = argparse.ArgumentParser()
-    p.add_argument("--in", dest="inp", default="data/pubmed_pancreatic_cancer_v2.csv")
+    p.add_argument("--in", dest="inp", default="data/pubmed_pancreatic_cancer_v4.csv")
     p.add_argument("--model", default="allenai/specter")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--cluster", choices=["hdbscan", "gmm", "none"], default="gmm")
@@ -467,6 +467,10 @@ def main():
     os.makedirs(args.outdir, exist_ok=True)
     df = pd.read_csv(args.inp)
     df = df.dropna(subset=["title", "abstract"], how="all").reset_index(drop=True)
+    # df = df[
+    #     (df["title"].str.contains("pancrea", case=False, na=False)) |
+    #     (df["abstract"].str.contains("pancrea", case=False, na=False))
+    # ]
     texts = (
         "Title: " + df["title"].fillna("") +
         " Abstract: " + df["abstract"].fillna("")
@@ -544,7 +548,7 @@ def main():
         #     df.loc[i, "bridge_keywords"] = ", ".join(kk)
 
     # Save artifacts
-    out_csv = os.path.join(args.outdir, "embedded_2d_v2.csv")
+    out_csv = os.path.join(args.outdir, "embedded_2d_v5.csv")
     df.to_csv(out_csv, index=False)
     np.save(os.path.join(args.outdir, EMBEDDINGS_PATH), emb)
 
@@ -649,7 +653,7 @@ def main():
             hoverinfo="text",
         )
 
-    out_html = os.path.join(args.outdir, "plot_v7_noadenocarcinoma.html") # CHANGE PLOT NAME HERE
+    out_html = os.path.join(args.outdir, PLOT_NAME) # CHANGE PLOT NAME HERE
     fig.write_html(out_html, include_plotlyjs="cdn")
 
     print(f"Wrote:\n- {out_csv}\n- {out_html}\n- {os.path.join(args.outdir, EMBEDDINGS_PATH)}")
