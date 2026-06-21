@@ -2,7 +2,7 @@
 Embed abstracts, reduce to 2D, cluster, and export an interactive plot.
 
 Usage:
-  python embed_viz.py --in data/pubmed_pancreatic_cancer_v3.csv --model sentence-transformers/allenai-specter2 --outdir outputs                                         
+  python embed_viz.py --in data/pubmed_pancreatic_cancer_v3.csv --model allenai/specter --outdir outputs                                         
 
 Default embedding model:
   - "allenai/specter" (great for scientific paper similarity; SentenceTransformers-compatible)
@@ -28,7 +28,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 import umap
 import hdbscan
-from keybert import KeyBERT
 from sentence_transformers import SentenceTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer, ENGLISH_STOP_WORDS
 from sklearn.metrics.pairwise import cosine_similarity
@@ -61,6 +60,7 @@ def embed_texts(texts: List[str], model_name: str, batch_size: int = 32) -> np.n
 
 
 def reduce_umap(emb: np.ndarray, n_neighbors: int = 20, min_dist: float = 0.05, random_state: int = 42) -> np.ndarray:
+    print("Embeddings to UMAP converted")
     reducer = umap.UMAP(
         n_components=2,
         n_neighbors=n_neighbors,
@@ -154,15 +154,6 @@ def bridge_score(emb: np.ndarray, labels: np.ndarray, a: int, b: int) -> BridgeR
     score = np.minimum(s_to_a, s_to_b)  # must be good to both
     i = int(np.argmax(score))
     return BridgeResult(idx=i, cluster_a=a, cluster_b=b, score=float(score[i]))
-
-
-def keywords_for_texts(texts: List[str], top_n: int = 8) -> List[List[str]]:
-    kw = KeyBERT(model="all-MiniLM-L6-v2")  # lightweight just for keywords
-    out: List[List[str]] = []
-    for t in texts:
-        pairs = kw.extract_keywords(t, top_n=top_n, stop_words="english", use_mmr=True, diversity=0.6)
-        out.append([p[0] for p in pairs])
-    return out
 
 # =========================
 # CLUSTER TOP TERMS
@@ -438,10 +429,10 @@ def make_cluster_hover_text(cluster_id, cluster_counts, cancer_terms):
 # =========================
 
 def main():
-    EMBEDDINGS_PATH = "embeddings_v7.npy" # v3 with mean pooling
-    PLOT_NAME = "plot_v8_alladenocarcinoma.html"
+    EMBEDDINGS_PATH = "embeddings_only_pancreatic_cancer.npy" # v3 with mean pooling
+    PLOT_NAME = "plot_v10_only_pancreatic_cancer.html"
     p = argparse.ArgumentParser()
-    p.add_argument("--in", dest="inp", default="data/pubmed_pancreatic_cancer_v4.csv")
+    p.add_argument("--in", dest="inp", default="data/pubmed_only_pancreatic_cancer.csv")
     p.add_argument("--model", default="allenai/specter")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--cluster", choices=["hdbscan", "gmm", "none"], default="gmm")
@@ -467,10 +458,8 @@ def main():
     os.makedirs(args.outdir, exist_ok=True)
     df = pd.read_csv(args.inp)
     df = df.dropna(subset=["title", "abstract"], how="all").reset_index(drop=True)
-    # df = df[
-    #     (df["title"].str.contains("pancrea", case=False, na=False)) |
-    #     (df["abstract"].str.contains("pancrea", case=False, na=False))
-    # ]
+
+    print("Dataframe created...")
     texts = (
         "Title: " + df["title"].fillna("") +
         " Abstract: " + df["abstract"].fillna("")
@@ -486,7 +475,7 @@ def main():
             emb = embed_texts(texts, args.model, batch_size=args.batch_size)
             np.save(emb_path, emb)
     else:
-        print("Computing embeddings (this may take a while)...")
+        print("Computing embeddings...")
         emb = embed_texts(texts, args.model, batch_size=args.batch_size)
         np.save(emb_path, emb)
     
@@ -548,7 +537,7 @@ def main():
         #     df.loc[i, "bridge_keywords"] = ", ".join(kk)
 
     # Save artifacts
-    out_csv = os.path.join(args.outdir, "embedded_2d_v5.csv")
+    out_csv = os.path.join(args.outdir, "embedded_only_pancreatic_cancer.csv")
     df.to_csv(out_csv, index=False)
     np.save(os.path.join(args.outdir, EMBEDDINGS_PATH), emb)
 
