@@ -17,8 +17,7 @@ Instead of manually reviewing thousands of papers, this pipeline:
 The goal is to analyze and interpret these embeddings and see what could possibly be improved in current pancreatic cancer literature.
 
 ### 1) Create a dataset 
-- **Currently querying 5,000 abstracts** with key and MeSH words to make sure the embedding space accurately represents pancreatic cancer research
-
+- Input a desired time period and term to search through PubMed database
 Run:
 
 ```bash
@@ -28,7 +27,7 @@ python pubmed_collect.py --term "pancreatic cancer" --retmax 5000 --out data/pub
 ### 2) Pick an embedding model (recommended defaults)
 For scientific-paper similarity on **titles + abstracts**, current default used is:
 - **`allenai/specter`** (good semantic clustering of papers; works cleanly with SentenceTransformers)
-- 
+
 ### 3) Embed + visualize + cluster
 
 ```bash
@@ -39,8 +38,6 @@ This writes:
 - `outputs/embedded_2d.csv` (PMID/title/abstract + 2D coords + cluster label)
 - `outputs/embeddings.npy` (vector embeddings)
 - `outputs/plot.html` (interactive plot)
-
-This repo does a first pass by adding `bridge_keywords` for papers that lie near the “between clusters” region. By clicking on 'plot.html' it will open an interactive map of embeddings.
 
 ## Install
 
