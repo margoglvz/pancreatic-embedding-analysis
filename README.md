@@ -1,5 +1,7 @@
 # Pancreatic Cancer Literature Embeddings Analysis
 
+**DISCLAIMER**: My research has moved to a private repository and updates will be made soon :)
+
 ## Overview
 
 Hello! My name is Margaret Galvez and this is my project for my ICS Honors Thesis. 
