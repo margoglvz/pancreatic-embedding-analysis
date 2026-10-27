@@ -2,7 +2,7 @@
 Embed abstracts, reduce to 2D, cluster, and export an interactive plot.
 
 Usage:
-  python embed_viz.py --in data/pubmed_pancreatic_cancer_v3.csv --model allenai/specter --outdir outputs                                         
+  python embed_viz.py --in [FILENAME] --model sentence-transformers/allenai-specter --outdir outputs                                         
 
 Default embedding model:
   - "allenai/specter" (great for scientific paper similarity; SentenceTransformers-compatible)
@@ -429,10 +429,12 @@ def make_cluster_hover_text(cluster_id, cluster_counts, cancer_terms):
 # =========================
 
 def main():
-    EMBEDDINGS_PATH = "embeddings_only_pancreatic_cancer.npy" # v3 with mean pooling
-    PLOT_NAME = "plot_v10_only_pancreatic_cancer.html"
+    PUBMED_CSV = "data/pubmed_ipsc_beta.csv"
+    EMBEDDINGS_PATH = "embeddings_ipsc_beta.npy" # v3 with mean pooling
+    PLOT_NAME = "plot_v12_ipsc_beta.html"
+    OUT_CSV = "embedded_ipsc_beta_v1.csv"
     p = argparse.ArgumentParser()
-    p.add_argument("--in", dest="inp", default="data/pubmed_only_pancreatic_cancer.csv")
+    p.add_argument("--in", dest="inp", default=PUBMED_CSV)
     p.add_argument("--model", default="allenai/specter")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--cluster", choices=["hdbscan", "gmm", "none"], default="gmm")
@@ -537,7 +539,7 @@ def main():
         #     df.loc[i, "bridge_keywords"] = ", ".join(kk)
 
     # Save artifacts
-    out_csv = os.path.join(args.outdir, "embedded_only_pancreatic_cancer.csv")
+    out_csv = os.path.join(args.outdir, OUT_CSV)
     df.to_csv(out_csv, index=False)
     np.save(os.path.join(args.outdir, EMBEDDINGS_PATH), emb)
 
