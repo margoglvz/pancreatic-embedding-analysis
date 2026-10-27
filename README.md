@@ -47,3 +47,22 @@ This writes:
 pip install -r requirements.txt
 ```
 
+
+## Desktop GUI
+
+An additional GUI feature was made to make the process of creating these plots more user-friendly. This GUI was created with Python Tkinter for simplicity.
+
+```bash
+python gui.py
+```
+
+Run `python gui.py` using the same Python environment as the scripts (on Windows, `.\.venv\Scripts\python.exe gui.py`). Tkinter is required; it is included in standard Windows Python installations.
+
+GUI Options:
+- **Generate dataset:** enter a new CSV path, PubMed query, start/end dates (`YYYY/MM/DD`), and maximum paper count. The `NCBI_EMAIL` and optionally `NCBI_API_KEY` variables are expected to be in a `.env`. A successful run fills the input on the visualization tab.
+  - Error Handling: Existing output paths are rejected. 
+- **Embed and visualize:** select the input dataset CSV and new output paths for the embeddings `.npy`, interactive plot `.html`, and embedded `.csv`. Defaults are 100 global terms removed, `sentence-transformers/allenai-specter`, and GMM clustering. Click **Run**, then **Open completed plot** when finished.
+
+Relative paths are resolved from the repository folder. Runs execute in the background and display script output in the log. The GUI uses the existing GMM configuration (20 clusters), so use a dataset with at least 20 usable papers for GMM.
+
+The visualization CLI also accepts `--embeddings-path`, `--plot-path`, `--embeddings-csv`, and `--global-terms-to-remove`. Relative CLI output paths are resolved under `--outdir`.
