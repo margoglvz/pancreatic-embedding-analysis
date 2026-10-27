@@ -326,6 +326,7 @@ def main():
     p.add_argument("--api-key", default=NCBI_API_KEY)
     p.add_argument("--start-date", default="2006/01/01", help="Range start (YYYY/MM/DD)")
     p.add_argument("--end-date", default=datetime.now().strftime("%Y/%m/%d"), help="Range end (YYYY/MM/DD; default: today)")
+    p.add_argument("--no-overwrite", action="store_true", help="Require a new output filename")
     args = p.parse_args()
     if not args.term.strip():
         p.error("--term must not be empty")
@@ -365,7 +366,7 @@ def main():
 
     df = pd.DataFrame(rows, columns=["pmid", "doi", "title", "abstract", "journal", "year"])
     df = df.dropna(subset=["abstract"]).drop_duplicates(subset=["pmid"])
-    df.to_csv(args.out, index=False)
+    df.to_csv(args.out, index=False, mode="x" if args.no_overwrite else "w")
     print(f"Wrote {len(df):,} rows to {args.out}")
 
 
