@@ -2,7 +2,7 @@
 Collect PubMed abstracts + metadata into a local dataset.
 
 Usage (PowerShell):
-  python generate_dataset.py --term "pancreatic cancer" --retmax 5000 --out data/pubmed_pancreatic_cancer.csv
+  python generate_dataset.py --term "pancreatic cancer" --retmax 5000 --out pubmed_papers.csv
 
 Notes:
   - NCBI requires an email. Optionally set an API key for higher rate limits.
@@ -10,6 +10,8 @@ Notes:
 """
 
 from __future__ import annotations
+from pathlib import Path
+from run_artifacts import create_run, artifact_name, stage
 from typing import Any, Dict, Iterable, List, Optional
 from bs4 import BeautifulSoup
 from Bio import Entrez
@@ -271,7 +273,7 @@ def gather_pmids_time_slice(term, start_date, end_date, max_papers=None, _seen=N
 
 
 def main():
-    PUBMED_CSV = "data/pubmed_ipsc_beta.csv"
+    PUBMED_CSV = "pubmed_papers.csv"
     p = argparse.ArgumentParser()
     query = """
         (
@@ -352,6 +354,8 @@ def main():
     p.add_argument("--start-date", default="2006/01/01", help="Range start (YYYY/MM/DD)")
     p.add_argument("--end-date", default=datetime.now().strftime("%Y/%m/%d"), help="Range end (YYYY/MM/DD; default: today)")
     p.add_argument("--no-overwrite", action="store_true", help="Require a new output filename")
+    p.add_argument("--runs-dir", default="runs", help="Parent directory for timestamped runs")
+    p.add_argument("--run-dir", help="Explicit run folder to start the dataset stage in")
     args = p.parse_args()
     if not args.term.strip():
         p.error("--term must not be empty")
@@ -370,29 +374,34 @@ def main():
     Entrez.email = args.email.strip()
     Entrez.api_key = args.api_key or None
 
-    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    run = Path(args.run_dir).expanduser().resolve() if args.run_dir else create_run(args.runs_dir)
+    run.mkdir(parents=True, exist_ok=True)
+    settings = vars(args).copy()
+    filename = artifact_name(args.out, ".csv")
+    args.out = str(run / filename)
+    with stage(run, "generate_dataset", settings, {"pubmed_csv": filename}):
 
-    # pmids = search_pmids(args.term, args.retmax) # Old Method
-    pmids = gather_pmids_time_slice(args.term, args.start_date, args.end_date, max_papers=args.retmax)
-    rows: List[Dict[str, Any]] = []
+        # pmids = search_pmids(args.term, args.retmax) # Old Method
+        pmids = gather_pmids_time_slice(args.term, args.start_date, args.end_date, max_papers=args.retmax)
+        rows: List[Dict[str, Any]] = []
 
-    for article in tqdm(fetch_records(pmids, batch_size=args.batch_size), total=len(pmids)):
-        pmid = _get(article, ["MedlineCitation", "PMID"])
-        rows.append(
-            {
-                "pmid": str(pmid) if pmid is not None else None,
-                "doi": _extract_doi(article),
-                "title": _extract_title(article),
-                "abstract": _extract_abstract_text(article),
-                "journal": _extract_journal(article),
-                "year": _extract_year(article),
-            }
-        )
+        for article in tqdm(fetch_records(pmids, batch_size=args.batch_size), total=len(pmids)):
+            pmid = _get(article, ["MedlineCitation", "PMID"])
+            rows.append(
+                {
+                    "pmid": str(pmid) if pmid is not None else None,
+                    "doi": _extract_doi(article),
+                    "title": _extract_title(article),
+                    "abstract": _extract_abstract_text(article),
+                    "journal": _extract_journal(article),
+                    "year": _extract_year(article),
+                }
+            )
 
-    df = pd.DataFrame(rows, columns=["pmid", "doi", "title", "abstract", "journal", "year"])
-    df = df.dropna(subset=["abstract"]).drop_duplicates(subset=["pmid"])
-    df.to_csv(args.out, index=False, mode="x" if args.no_overwrite else "w")
-    print(f"Wrote {len(df):,} rows to {args.out}")
+        df = pd.DataFrame(rows, columns=["pmid", "doi", "title", "abstract", "journal", "year"])
+        df = df.dropna(subset=["abstract"]).drop_duplicates(subset=["pmid"])
+        df.to_csv(args.out, index=False, mode="x" if args.no_overwrite else "w")
+        print(f"Wrote {len(df):,} rows to {args.out}")
 
 
 if __name__ == "__main__":

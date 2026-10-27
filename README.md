@@ -23,7 +23,7 @@ The goal is to analyze and interpret these embeddings and see what could possibl
 Run:
 
 ```bash
-python pubmed_collect.py --term "pancreatic cancer" --retmax 5000 --out data/pubmed_pancreatic_cancer.csv
+python generate_dataset.py --term "pancreatic cancer" --retmax 5000 --out pubmed_papers.csv
 ```
 
 ### 2) Pick an embedding model (recommended defaults)
@@ -33,13 +33,26 @@ For scientific-paper similarity on **titles + abstracts**, current default used 
 ### 3) Embed + visualize + cluster
 
 ```bash
-python embed_viz.py --in data/pubmed_pancreatic_cancer.csv --model allenai/specter --outdir outputs
+python embed_viz.py --in runs/<timestamp>/pubmed_papers.csv --model sentence-transformers/allenai-specter
 ```
 
-This writes:
-- `outputs/embedded_2d.csv` (PMID/title/abstract + 2D coords + cluster label)
-- `outputs/embeddings.npy` (vector embeddings)
-- `outputs/plot.html` (interactive plot)
+A new dataset creates a timestamped run folder. Visualization automatically continues that folder if it has not yet had a visualization stage. When the input CSV is outside a run folder, or its run already has a visualization attempt, visualization creates a new run and copies the input CSV into it.
+
+```text
+runs/
+  2026-10-27_12-30-00_123456_a1b2c3/
+    pubmed_papers.csv
+    embedded.csv
+    embeddings.npy
+    plot.html
+    config.json
+```
+
+A dataset-only run contains the papers CSV and `config.json`; the visualization stage adds the other three artifacts. Existing datasets and outputs are not moved. Output flags (`--out`, `--embeddings-path`, `--embeddings-csv`, `--plot-path`) now specify filenames inside the run folder; directory components are ignored.
+
+`config.json` records creation time, artifact filenames, and each stage's input settings, start/end timestamps, and status. NCBI email and API keys are excluded. Failed runs retain their configuration and any partial artifacts. GUI force stops are marked `interrupted`; externally killing a CLI process may leave its status as `running`.
+
+Use `--runs-dir experiments` to change the parent folder. The visualization `--outdir` option is an alias for this parent folder. Use `--run-dir runs/<timestamp>` to explicitly continue a run (each stage can execute only once per folder).
 
 ## Install
 
@@ -59,10 +72,12 @@ python gui.py
 Run `python gui.py` using the same Python environment as the scripts (on Windows, `.\.venv\Scripts\python.exe gui.py`). Tkinter is required; it is included in standard Windows Python installations.
 
 GUI Options:
-- **Generate dataset:** enter a new CSV path, PubMed query, start/end dates (`YYYY/MM/DD`), and maximum paper count. The `NCBI_EMAIL` and optionally `NCBI_API_KEY` variables are expected to be in a `.env`. A successful run fills the input on the visualization tab.
-  - Error Handling: Existing output paths are rejected. 
-- **Embed and visualize:** select the input dataset CSV and new output paths for the embeddings `.npy`, interactive plot `.html`, and embedded `.csv`. Defaults are 100 global terms removed, `sentence-transformers/allenai-specter`, and GMM clustering. Click **Run**, then **Open completed plot** when finished.
+- **Generate dataset:** enter a CSV filename, PubMed query, start/end dates (`YYYY/MM/DD`), and maximum paper count. The `NCBI_EMAIL` and optionally `NCBI_API_KEY` variables are expected to be in a `.env`. A successful run fills the input on the visualization tab.
+  - Every dataset starts a fresh timestamped folder; existing files within a run are protected. 
+- **Embed and visualize:** select the input dataset CSV and output filenames for the embeddings `.npy`, interactive plot `.html`, and embedded `.csv`. Defaults are 100 global terms removed, `sentence-transformers/allenai-specter`, and GMM clustering. Click **Run**, then **Open completed plot** when finished.
 
-Relative paths are resolved from the repository folder. Runs execute in the background and display script output in the log. The GUI uses the existing GMM configuration (20 clusters), so use a dataset with at least 20 usable papers for GMM.
+The GUI saves all artifacts under the repository?s `runs/` folder. Successful dataset generation fills the visualization input automatically. Runs execute in the background and display script output in the log. The GUI uses the existing GMM configuration (20 clusters), so use a dataset with at least 20 usable papers for GMM.
 
-The visualization CLI also accepts `--embeddings-path`, `--plot-path`, `--embeddings-csv`, and `--global-terms-to-remove`. Relative CLI output paths are resolved under `--outdir`.
+The visualization CLI also accepts `--embeddings-path`, `--plot-path`, `--embeddings-csv`, and `--global-terms-to-remove`. All output filenames are placed inside the timestamped run folder.
+
+Offline run-folder checks: `python -m unittest discover -s tests -v`.
