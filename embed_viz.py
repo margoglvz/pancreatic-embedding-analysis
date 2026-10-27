@@ -2,7 +2,7 @@
 Embed abstracts, reduce to 2D, cluster, and export an interactive plot.
 
 Usage:
-  python embed_viz.py --in [FILENAME] --model sentence-transformers/allenai-specter --outdir outputs                                         
+  python embed_viz.py --in [FILENAME] --model sentence-transformers/allenai-specter --runs-dir runs                                         
 
 Default embedding model:
   - "allenai/specter" (great for scientific paper similarity; SentenceTransformers-compatible)
@@ -16,6 +16,7 @@ Note on SPECTER2:
 """
 
 from __future__ import annotations
+from run_artifacts import visualization_run, copy_input, artifact_name, stage
 
 import argparse
 import os
@@ -431,9 +432,9 @@ def make_cluster_hover_text(cluster_id, cluster_counts, cancer_terms):
 
 def main():
     PUBMED_CSV = "data/pubmed_ipsc_beta.csv"
-    EMBEDDINGS_PATH = "embeddings_ipsc_beta.npy" # v3 with mean pooling
-    PLOT_NAME = "plot_v12_ipsc_beta.html"
-    OUT_CSV = "embedded_ipsc_beta_v1.csv"
+    EMBEDDINGS_PATH = "embeddings.npy" # v3 with mean pooling
+    PLOT_NAME = "plot.html"
+    OUT_CSV = "embedded.csv"
     p = argparse.ArgumentParser()
     p.add_argument("--in", dest="inp", default=PUBMED_CSV)
     p.add_argument("--model", default="sentence-transformers/allenai-specter")
@@ -455,213 +456,227 @@ def main():
     p.add_argument("--kde-grid", type=int, default=220, help="Grid size per axis for KDE evaluation.")
     p.add_argument("--kde-opacity", type=float, default=0.35, help="Opacity for KDE overlay.")
     p.add_argument("--kde-colorscale", default="Inferno", help="Plotly colorscale name for KDE overlay.")
-    p.add_argument("--outdir", default="outputs")
-    p.add_argument("--embeddings-path", default=EMBEDDINGS_PATH, help="NPY path, relative to --outdir unless absolute")
-    p.add_argument("--plot-path", default=PLOT_NAME, help="HTML path, relative to --outdir unless absolute")
-    p.add_argument("--embeddings-csv", default=OUT_CSV, help="CSV path, relative to --outdir unless absolute")
+    p.add_argument("--outdir", default=None, help="Alias for --runs-dir (parent of timestamped runs)")
+    p.add_argument("--embeddings-path", default=EMBEDDINGS_PATH, help="NPY path, filename inside the run folder; directory components are ignored")
+    p.add_argument("--plot-path", default=PLOT_NAME, help="HTML path, filename inside the run folder; directory components are ignored")
+    p.add_argument("--embeddings-csv", default=OUT_CSV, help="CSV path, filename inside the run folder; directory components are ignored")
     p.add_argument("--global-terms-to-remove", type=int, default=100)
+    p.add_argument("--runs-dir", default="runs", help="Parent directory for timestamped runs")
+    p.add_argument("--run-dir", help="Continue a specific run folder")
     args = p.parse_args()
     if args.global_terms_to_remove < 0:
         p.error("--global-terms-to-remove must be nonnegative")
-    for filename in (args.embeddings_path, args.plot_path, args.embeddings_csv):
-        os.makedirs(os.path.dirname(os.path.join(args.outdir, filename)) or ".", exist_ok=True)
+    print("Documenting run...")
+    settings = vars(args).copy()
+    run = visualization_run(args.inp, args.run_dir, args.outdir or args.runs_dir)
+    args.embeddings_path = artifact_name(args.embeddings_path, ".npy")
+    args.plot_path = artifact_name(args.plot_path, ".html")
+    args.embeddings_csv = artifact_name(args.embeddings_csv, ".csv")
+    pubmed = copy_input(run, args.inp)
+    if args.embeddings_csv == pubmed.name:
+        p.error("Embedded CSV and PubMed CSV must have different filenames")
+    args.inp = str(pubmed)
+    args.outdir = str(run)
+    print("Creating dataframe...")
+    with stage(run, "embed_viz", settings, {
+        "pubmed_csv": pubmed.name, "embeddings_npy": args.embeddings_path,
+        "embedded_csv": args.embeddings_csv, "plot_html": args.plot_path,
+    }):
+        df = pd.read_csv(args.inp)
+        df = df.dropna(subset=["title", "abstract"], how="all").reset_index(drop=True)
 
-    os.makedirs(args.outdir, exist_ok=True)
-    df = pd.read_csv(args.inp)
-    df = df.dropna(subset=["title", "abstract"], how="all").reset_index(drop=True)
+        print("Dataframe created...")
+        texts = (
+            "Title: " + df["title"].fillna("") +
+            " Abstract: " + df["abstract"].fillna("")
+        ).tolist()
 
-    print("Dataframe created...")
-    texts = (
-        "Title: " + df["title"].fillna("") +
-        " Abstract: " + df["abstract"].fillna("")
-    ).tolist()
-
-    # Check if embeddings already exist (cache)
-    emb_path = os.path.join(args.outdir, args.embeddings_path)
-    if os.path.exists(emb_path):
-        print(f"Loading cached embeddings from {emb_path}")
-        emb = np.load(emb_path)
-        if len(emb) != len(texts):
-            print(f"Warning: cached embeddings ({len(emb)} rows) don't match data ({len(texts)} rows). Recomputing...")
+        # Check if embeddings already exist (cache)
+        emb_path = os.path.join(args.outdir, args.embeddings_path)
+        if os.path.exists(emb_path):
+            print(f"Loading cached embeddings from {emb_path}")
+            emb = np.load(emb_path)
+            if len(emb) != len(texts):
+                print(f"Warning: cached embeddings ({len(emb)} rows) don't match data ({len(texts)} rows). Recomputing...")
+                emb = embed_texts(texts, args.model, batch_size=args.batch_size)
+                np.save(emb_path, emb)
+        else:
+            print("Computing embeddings...")
             emb = embed_texts(texts, args.model, batch_size=args.batch_size)
             np.save(emb_path, emb)
-    else:
-        print("Computing embeddings...")
-        emb = embed_texts(texts, args.model, batch_size=args.batch_size)
-        np.save(emb_path, emb)
-    
-    xy = reduce_umap(emb)
+        
+        xy = reduce_umap(emb)
 
-    bic = None
-    if args.cluster == "hdbscan":
-        # labels = cluster_hdbscan(emb, min_cluster_size=args.min_cluster_size)
-        labels, cluster_prob = cluster_hdbscan(emb)
-    elif args.cluster == "gmm":
-        labels, cluster_prob, bic = cluster_gmm(emb)
-    else:
-        labels = np.zeros(len(texts), dtype=int)
-        cluster_prob = np.ones(len(texts), dtype=float)
+        bic = None
+        if args.cluster == "hdbscan":
+            # labels = cluster_hdbscan(emb, min_cluster_size=args.min_cluster_size)
+            labels, cluster_prob = cluster_hdbscan(emb)
+        elif args.cluster == "gmm":
+            labels, cluster_prob, bic = cluster_gmm(emb)
+        else:
+            labels = np.zeros(len(texts), dtype=int)
+            cluster_prob = np.ones(len(texts), dtype=float)
 
-    df["x"] = xy[:, 0]
-    df["y"] = xy[:, 1]
-    df["cluster"] = labels
-    df["cluster_prob"] = cluster_prob
+        df["x"] = xy[:, 0]
+        df["y"] = xy[:, 1]
+        df["cluster"] = labels
+        df["cluster_prob"] = cluster_prob
 
-    # Cluster labels: top TF-IDF terms per cluster (shown in hover + plotted at centroids)
-    cluster_terms = cluster_top_terms_tfidf(texts, labels, top_k=args.cluster_top_terms, global_terms_to_remove=args.global_terms_to_remove)
-    cluster_label_map: dict[int, str] = {
-        int(c): (" • ".join(ts) if ts else f"cluster {int(c)}") for c, ts in cluster_terms.items()
-    }
-    df["cluster_label"] = df["cluster"].map(lambda c: "noise" if int(c) < 0 else cluster_label_map.get(int(c), f"cluster {int(c)}"))
+        # Cluster labels: top TF-IDF terms per cluster (shown in hover + plotted at centroids)
+        cluster_terms = cluster_top_terms_tfidf(texts, labels, top_k=args.cluster_top_terms, global_terms_to_remove=args.global_terms_to_remove)
+        cluster_label_map: dict[int, str] = {
+            int(c): (" • ".join(ts) if ts else f"cluster {int(c)}") for c, ts in cluster_terms.items()
+        }
+        df["cluster_label"] = df["cluster"].map(lambda c: "noise" if int(c) < 0 else cluster_label_map.get(int(c), f"cluster {int(c)}"))
 
-    # Find top cancer terms in each cluster
-    cluster_counts, cancer_terms = get_top_cancer_terms(texts, labels)
+        # Find top cancer terms in each cluster
+        cluster_counts, cancer_terms = get_top_cancer_terms(texts, labels)
 
-    # Bridge paper between two largest clusters
-    bridge = None
-    two = pick_two_largest_clusters(labels)
-    if two is not None:
-        a, b = two
-        bridge = bridge_score(emb, labels, a, b)
-        df["is_bridge"] = False
-        df.loc[bridge.idx, "is_bridge"] = True
-    else:
-        df["is_bridge"] = False
+        # Bridge paper between two largest clusters
+        bridge = None
+        two = pick_two_largest_clusters(labels)
+        if two is not None:
+            a, b = two
+            bridge = bridge_score(emb, labels, a, b)
+            df["is_bridge"] = False
+            df.loc[bridge.idx, "is_bridge"] = True
+        else:
+            df["is_bridge"] = False
 
-    # Keywords for (a) bridge and (b) a few along the centroid-to-centroid line for interpretability
-    df["bridge_keywords"] = ""  # Always create the column, even if empty
-    if bridge is not None:
-        a, b = bridge.cluster_a, bridge.cluster_b
-        idx_a = np.where(labels == a)[0]
-        idx_b = np.where(labels == b)[0]
-        ca = emb[idx_a].mean(axis=0, keepdims=True)
-        cb = emb[idx_b].mean(axis=0, keepdims=True)
-        ca /= np.linalg.norm(ca) + 1e-12
-        cb /= np.linalg.norm(cb) + 1e-12
+        # Keywords for (a) bridge and (b) a few along the centroid-to-centroid line for interpretability
+        df["bridge_keywords"] = ""  # Always create the column, even if empty
+        if bridge is not None:
+            a, b = bridge.cluster_a, bridge.cluster_b
+            idx_a = np.where(labels == a)[0]
+            idx_b = np.where(labels == b)[0]
+            ca = emb[idx_a].mean(axis=0, keepdims=True)
+            cb = emb[idx_b].mean(axis=0, keepdims=True)
+            ca /= np.linalg.norm(ca) + 1e-12
+            cb /= np.linalg.norm(cb) + 1e-12
 
-        # Papers near the "bridge direction": close to both centroids and close to the segment in embedding space
-        # We approximate segment proximity by similarity balance.
-        s_to_a = cosine_similarity(emb, ca).ravel()
-        s_to_b = cosine_similarity(emb, cb).ravel()
-        balance = 1.0 - np.abs(s_to_a - s_to_b)
-        candidate = np.argsort(-balance)[:12]
+            # Papers near the "bridge direction": close to both centroids and close to the segment in embedding space
+            # We approximate segment proximity by similarity balance.
+            s_to_a = cosine_similarity(emb, ca).ravel()
+            s_to_b = cosine_similarity(emb, cb).ravel()
+            balance = 1.0 - np.abs(s_to_a - s_to_b)
+            candidate = np.argsort(-balance)[:12]
 
-        # kw_texts = [texts[i] for i in candidate]
-        # kws = keywords_for_texts(kw_texts, top_n=6)
-        # for i, kk in zip(candidate, kws):
-        #     df.loc[i, "bridge_keywords"] = ", ".join(kk)
+            # kw_texts = [texts[i] for i in candidate]
+            # kws = keywords_for_texts(kw_texts, top_n=6)
+            # for i, kk in zip(candidate, kws):
+            #     df.loc[i, "bridge_keywords"] = ", ".join(kk)
 
-    # Save artifacts
-    out_csv = os.path.join(args.outdir, args.embeddings_csv)
-    df.to_csv(out_csv, index=False)
-    np.save(os.path.join(args.outdir, args.embeddings_path), emb)
+        # Save artifacts
+        out_csv = os.path.join(args.outdir, args.embeddings_csv)
+        df.to_csv(out_csv, index=False)
+        np.save(os.path.join(args.outdir, args.embeddings_path), emb)
 
-    # Plot
-    hover = ["pmid", "year", "journal", "title", "cluster", "cluster_label", "cluster_prob", "is_bridge", "bridge_keywords"]
-    fig = px.scatter(
-        df,
-        x="x",
-        y="y",
-        color=df["cluster"].astype(str),
-        hover_data=hover,
-        title=f"PubMed abstracts: {args.model}",
-        opacity=0.75,
-    )
-
-    if bic is not None:
-        fig.add_annotation(
-            text=f"BIC: {bic:.2f}",
-            xref="paper",
-            yref="paper",
-            x=0.99,
-            y=0.01,
-            showarrow=False,
-            font=dict(size=14, color="black"),
-            align="right"
+        # Plot
+        hover = ["pmid", "year", "journal", "title", "cluster", "cluster_label", "cluster_prob", "is_bridge", "bridge_keywords"]
+        fig = px.scatter(
+            df,
+            x="x",
+            y="y",
+            color=df["cluster"].astype(str),
+            hover_data=hover,
+            title=f"PubMed abstracts: {args.model}",
+            opacity=0.75,
         )
 
-    if args.kde:
-        xs, ys, Z = kde2d_on_grid(xy, gridsize=args.kde_grid, bandwidth=args.kde_bandwidth)
-        kde_trace = go.Contour(
-            x=xs,
-            y=ys,
-            z=Z,
-            contours=dict(coloring="heatmap"),
-            colorscale=args.kde_colorscale,
-            opacity=float(args.kde_opacity),
-            showscale=False,
-            hoverinfo="skip",
-            name="density",
-        )
-        fig.add_trace(kde_trace)
-        # Ensure KDE sits behind the scatter
-        fig.data = (fig.data[-1],) + fig.data[:-1]
-
-    # emphasize bridge
-    if df["is_bridge"].any():
-        bridge_df = df[df["is_bridge"]]
-        fig.add_scatter(
-            x=bridge_df["x"],
-            y=bridge_df["y"],
-            mode="markers",
-            marker=dict(size=14, symbol="x", color="red"),
-            name="bridge",
-            text=bridge_df["title"],
-        )
-
-    # Black centroid markers + labels for each cluster (in 2D UMAP space)
-    centroids = (
-        df[df["cluster"] >= 0]
-        .groupby("cluster", as_index=False)[["x", "y"]]
-        .mean()
-        .sort_values("cluster")
-        .reset_index(drop=True)
-    )
-
-
-    if len(centroids) > 0:
-        centroids["cluster_label"] = centroids["cluster"].map(
-            lambda c: cluster_label_map.get(int(c), f"cluster {int(c)}")
-        )
-
-        centroids["hover_text"] = centroids["cluster"].apply(
-            lambda c: make_cluster_hover_text(c, cluster_counts, cancer_terms)
-        )
-
-        for _, row in centroids.iterrows():
+        if bic is not None:
             fig.add_annotation(
-                x=row["x"],
-                y=row["y"],
-                text=row["cluster_label"],
+                text=f"BIC: {bic:.2f}",
+                xref="paper",
+                yref="paper",
+                x=0.99,
+                y=0.01,
                 showarrow=False,
-                yshift=14,
-                font=dict(size=10, color="black"),
-                bgcolor="rgba(255,255,255,0.85)",
-                bordercolor="rgba(0,0,0,0.15)",
-                borderwidth=1,
+                font=dict(size=14, color="black"),
+                align="right"
             )
 
-        # 1) marker trace
-        fig.add_scatter(
-            x=centroids["x"],
-            y=centroids["y"],
-            mode="markers",
-            marker=dict(
-                size=14,
-                symbol="x",
-                color="black",
-                line=dict(width=2, color="black"),
-            ),
-            name="cluster centroids",
-            showlegend=True,
-            hovertext=centroids["hover_text"],
-            hoverinfo="text",
+        if args.kde:
+            xs, ys, Z = kde2d_on_grid(xy, gridsize=args.kde_grid, bandwidth=args.kde_bandwidth)
+            kde_trace = go.Contour(
+                x=xs,
+                y=ys,
+                z=Z,
+                contours=dict(coloring="heatmap"),
+                colorscale=args.kde_colorscale,
+                opacity=float(args.kde_opacity),
+                showscale=False,
+                hoverinfo="skip",
+                name="density",
+            )
+            fig.add_trace(kde_trace)
+            # Ensure KDE sits behind the scatter
+            fig.data = (fig.data[-1],) + fig.data[:-1]
+
+        # emphasize bridge
+        if df["is_bridge"].any():
+            bridge_df = df[df["is_bridge"]]
+            fig.add_scatter(
+                x=bridge_df["x"],
+                y=bridge_df["y"],
+                mode="markers",
+                marker=dict(size=14, symbol="x", color="red"),
+                name="bridge",
+                text=bridge_df["title"],
+            )
+
+        # Black centroid markers + labels for each cluster (in 2D UMAP space)
+        centroids = (
+            df[df["cluster"] >= 0]
+            .groupby("cluster", as_index=False)[["x", "y"]]
+            .mean()
+            .sort_values("cluster")
+            .reset_index(drop=True)
         )
 
-    out_html = os.path.join(args.outdir, args.plot_path)
-    fig.write_html(out_html, include_plotlyjs="cdn")
 
-    print(f"Wrote:\n- {out_csv}\n- {out_html}\n- {os.path.join(args.outdir, args.embeddings_path)}")
+        if len(centroids) > 0:
+            centroids["cluster_label"] = centroids["cluster"].map(
+                lambda c: cluster_label_map.get(int(c), f"cluster {int(c)}")
+            )
+
+            centroids["hover_text"] = centroids["cluster"].apply(
+                lambda c: make_cluster_hover_text(c, cluster_counts, cancer_terms)
+            )
+
+            for _, row in centroids.iterrows():
+                fig.add_annotation(
+                    x=row["x"],
+                    y=row["y"],
+                    text=row["cluster_label"],
+                    showarrow=False,
+                    yshift=14,
+                    font=dict(size=10, color="black"),
+                    bgcolor="rgba(255,255,255,0.85)",
+                    bordercolor="rgba(0,0,0,0.15)",
+                    borderwidth=1,
+                )
+
+            # 1) marker trace
+            fig.add_scatter(
+                x=centroids["x"],
+                y=centroids["y"],
+                mode="markers",
+                marker=dict(
+                    size=14,
+                    symbol="x",
+                    color="black",
+                    line=dict(width=2, color="black"),
+                ),
+                name="cluster centroids",
+                showlegend=True,
+                hovertext=centroids["hover_text"],
+                hoverinfo="text",
+            )
+
+        out_html = os.path.join(args.outdir, args.plot_path)
+        fig.write_html(out_html, include_plotlyjs="cdn")
+
+        print(f"Wrote:\n- {out_csv}\n- {out_html}\n- {os.path.join(args.outdir, args.embeddings_path)}")
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 import webbrowser
+from run_artifacts import create_run, visualization_run, artifact_name, mark_interrupted
 
 ROOT = Path(__file__).resolve().parent
 
@@ -41,6 +42,7 @@ class App(tk.Tk):
         self.stop_requested = threading.Event()
         self.quit_requested = False
         self.last_plot = None
+        self.active_run = None
         self.buttons = []
         self.protocol('WM_DELETE_WINDOW', self.close)
         tabs = ttk.Notebook(self)
@@ -52,7 +54,7 @@ class App(tk.Tk):
         self.dataset_tab, self.embed_tab, self.tabs = dataset, embed, tabs
         for frame in (dataset, embed):
             frame.columnconfigure(1, weight=1)
-        self.csv = self.field(dataset, 0, 'New dataset CSV', 'data/pubmed_run.csv', '.csv')
+        self.csv = self.field(dataset, 0, 'PubMed CSV filename', 'pubmed_papers.csv')
         ttk.Label(dataset, text='PubMed query').grid(row=1, column=0, sticky='nw', pady=5)
         self.query = ScrolledText(dataset, height=6, wrap='word')
         self.query.grid(row=1, column=1, columnspan=2, sticky='ew', pady=5)
@@ -63,15 +65,15 @@ class App(tk.Tk):
         ttk.Label(dataset, text='NCBI_EMAIL and optional NCBI_API_KEY are read from your .env file.').grid(row=5, column=0, columnspan=3, sticky='w', pady=8)
         self.run_button(dataset, 6, self.generate)
         self.input_csv = self.field(embed, 0, 'Input dataset CSV', 'data/pubmed_run.csv', '.csv', True)
-        self.npy = self.field(embed, 1, 'New embeddings NPY', 'outputs/embeddings_run.npy', '.npy')
-        self.html = self.field(embed, 2, 'New plot HTML', 'plots/plot_run.html', '.html')
-        self.output_csv = self.field(embed, 3, 'New embedded CSV', 'outputs/embedded_run.csv', '.csv')
+        self.npy = self.field(embed, 1, 'Embeddings NPY filename', 'embeddings.npy')
+        self.html = self.field(embed, 2, 'Plot HTML filename', 'plot.html')
+        self.output_csv = self.field(embed, 3, 'Embedded CSV filename', 'embedded.csv')
         self.terms = self.field(embed, 4, 'Global terms to remove', '100')
         self.model = self.field(embed, 5, 'Model', 'sentence-transformers/allenai-specter')
         ttk.Label(embed, text='Clustering').grid(row=6, column=0, sticky='w', pady=5)
         self.cluster = tk.StringVar(value='gmm')
         ttk.Combobox(embed, textvariable=self.cluster, values=('gmm', 'hdbscan', 'none'), state='readonly').grid(row=6, column=1, sticky='ew', pady=5)
-        ttk.Label(embed, text='Choose new output filenames for each run. Relative paths start at the repository folder.').grid(row=7, column=0, columnspan=3, sticky='w', pady=8)
+        ttk.Label(embed, text='Outputs and config.json are saved together in a timestamped runs/ folder.').grid(row=7, column=0, columnspan=3, sticky='w', pady=8)
         self.run_button(embed, 8, self.visualize)
         self.open_button = ttk.Button(embed, text='Open completed plot', command=self.open_plot, state='disabled')
         self.open_button.grid(row=8, column=2, pady=8)
@@ -108,7 +110,7 @@ class App(tk.Tk):
 
     def generate(self):
         try:
-            output = resolve_path(self.csv.get(), '.csv')
+            filename = artifact_name(self.csv.get(), '.csv')
             query = self.query.get('1.0', 'end').strip()
             if not query:
                 raise ValueError('Enter a PubMed query.')
@@ -118,17 +120,20 @@ class App(tk.Tk):
             limit = int(self.limit.get())
             if limit <= 0:
                 raise ValueError('Maximum papers must be positive.')
-            self.launch('generate_dataset.py', ['--out', str(output), '--term', query, '--start-date', start, '--end-date', end, '--retmax', str(limit), '--no-overwrite'], ('dataset', output))
-        except ValueError as exc:
+            run = create_run(ROOT / 'runs')
+            output = run / filename
+            self.active_run = run
+            self.launch('generate_dataset.py', ['--run-dir', str(run), '--out', filename, '--term', query, '--start-date', start, '--end-date', end, '--retmax', str(limit), '--no-overwrite'], ('dataset', output))
+        except (ValueError, OSError) as exc:
             messagebox.showerror('Check inputs', str(exc), parent=self)
 
     def visualize(self):
         try:
             inp = resolve_path(self.input_csv.get(), '.csv', True)
-            npy = resolve_path(self.npy.get(), '.npy')
-            html = resolve_path(self.html.get(), '.html')
-            csv = resolve_path(self.output_csv.get(), '.csv')
-            if len({inp, npy, html, csv}) != 4:
+            npy = artifact_name(self.npy.get(), '.npy')
+            html = artifact_name(self.html.get(), '.html')
+            csv = artifact_name(self.output_csv.get(), '.csv')
+            if csv in (inp.name, 'pubmed_papers.csv'):
                 raise ValueError('Input and output paths must be different.')
             terms = int(self.terms.get())
             if terms < 0:
@@ -136,8 +141,10 @@ class App(tk.Tk):
             model = self.model.get().strip()
             if not model:
                 raise ValueError('Enter a model name.')
-            self.launch('embed_viz.py', ['--in', str(inp), '--embeddings-path', str(npy), '--plot-path', str(html), '--embeddings-csv', str(csv), '--global-terms-to-remove', str(terms), '--model', model, '--cluster', self.cluster.get()], ('plot', html))
-        except ValueError as exc:
+            run = visualization_run(inp, root=ROOT / 'runs')
+            self.active_run = run
+            self.launch('embed_viz.py', ['--run-dir', str(run), '--in', str(inp), '--embeddings-path', str(npy), '--plot-path', str(html), '--embeddings-csv', str(csv), '--global-terms-to-remove', str(terms), '--model', model, '--cluster', self.cluster.get()], ('plot', run / html))
+        except (ValueError, OSError) as exc:
             messagebox.showerror('Check inputs', str(exc), parent=self)
 
     def launch(self, script, args, result):
@@ -189,6 +196,8 @@ class App(tk.Tk):
                 self.progress.stop()
                 for button in self.buttons:
                     button.configure(state='normal')
+                if self.stop_requested.is_set() and self.active_run is not None:
+                    mark_interrupted(self.active_run)
                 if self.quit_requested:
                     self.destroy()
                     return
