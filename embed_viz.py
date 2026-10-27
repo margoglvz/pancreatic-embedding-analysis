@@ -185,6 +185,7 @@ def cluster_top_terms_tfidf(
     top_k: int = 3,
     max_features: int = 5000,
     min_df: int = 2,
+    global_terms_to_remove: int = 100,
 ) -> dict[int, List[str]]:
     """
     Compute representative terms per cluster using TF-IDF across clusters.
@@ -202,7 +203,7 @@ def cluster_top_terms_tfidf(
         idx = np.where(labels == c)[0]
         docs.append(" ".join(texts[i] for i in idx))
 
-    global_top_words = get_global_top_words(texts)
+    global_top_words = get_global_top_words(texts, top_k=global_terms_to_remove) if global_terms_to_remove else []
     custom_stop_words = list(set(ENGLISH_STOP_WORDS)) + global_top_words
 
     vec = TfidfVectorizer(
@@ -211,7 +212,7 @@ def cluster_top_terms_tfidf(
         ngram_range=(1, 1),
         token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z]+\b",
         max_features=int(max_features), # Caps vocabulary size
-        min_df=int(min_df), # Drops very rare words
+        min_df=min(int(min_df), len(docs)), # Also support a single cluster
     )
     X = vec.fit_transform(docs)  # (n_clusters, n_terms)
     terms = np.asarray(vec.get_feature_names_out())
@@ -321,7 +322,7 @@ def get_top_cancer_terms(
     labels = np.asarray(labels, dtype=int)
     clusters = sorted(int(c) for c in np.unique(labels) if c >= 0) # removes noise if any
     if not clusters:
-        return {}
+        return {}, cancer_terms
     
     for c in clusters:
         cluster_term_counts = Counter()
@@ -435,7 +436,7 @@ def main():
     OUT_CSV = "embedded_ipsc_beta_v1.csv"
     p = argparse.ArgumentParser()
     p.add_argument("--in", dest="inp", default=PUBMED_CSV)
-    p.add_argument("--model", default="allenai/specter")
+    p.add_argument("--model", default="sentence-transformers/allenai-specter")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--cluster", choices=["hdbscan", "gmm", "none"], default="gmm")
     p.add_argument("--cluster-top-terms", type=int, default=3, help="How many terms to label each cluster with.")
@@ -455,7 +456,15 @@ def main():
     p.add_argument("--kde-opacity", type=float, default=0.35, help="Opacity for KDE overlay.")
     p.add_argument("--kde-colorscale", default="Inferno", help="Plotly colorscale name for KDE overlay.")
     p.add_argument("--outdir", default="outputs")
+    p.add_argument("--embeddings-path", default=EMBEDDINGS_PATH, help="NPY path, relative to --outdir unless absolute")
+    p.add_argument("--plot-path", default=PLOT_NAME, help="HTML path, relative to --outdir unless absolute")
+    p.add_argument("--embeddings-csv", default=OUT_CSV, help="CSV path, relative to --outdir unless absolute")
+    p.add_argument("--global-terms-to-remove", type=int, default=100)
     args = p.parse_args()
+    if args.global_terms_to_remove < 0:
+        p.error("--global-terms-to-remove must be nonnegative")
+    for filename in (args.embeddings_path, args.plot_path, args.embeddings_csv):
+        os.makedirs(os.path.dirname(os.path.join(args.outdir, filename)) or ".", exist_ok=True)
 
     os.makedirs(args.outdir, exist_ok=True)
     df = pd.read_csv(args.inp)
@@ -468,7 +477,7 @@ def main():
     ).tolist()
 
     # Check if embeddings already exist (cache)
-    emb_path = os.path.join(args.outdir, EMBEDDINGS_PATH)
+    emb_path = os.path.join(args.outdir, args.embeddings_path)
     if os.path.exists(emb_path):
         print(f"Loading cached embeddings from {emb_path}")
         emb = np.load(emb_path)
@@ -483,11 +492,15 @@ def main():
     
     xy = reduce_umap(emb)
 
+    bic = None
     if args.cluster == "hdbscan":
         # labels = cluster_hdbscan(emb, min_cluster_size=args.min_cluster_size)
         labels, cluster_prob = cluster_hdbscan(emb)
     elif args.cluster == "gmm":
         labels, cluster_prob, bic = cluster_gmm(emb)
+    else:
+        labels = np.zeros(len(texts), dtype=int)
+        cluster_prob = np.ones(len(texts), dtype=float)
 
     df["x"] = xy[:, 0]
     df["y"] = xy[:, 1]
@@ -495,7 +508,7 @@ def main():
     df["cluster_prob"] = cluster_prob
 
     # Cluster labels: top TF-IDF terms per cluster (shown in hover + plotted at centroids)
-    cluster_terms = cluster_top_terms_tfidf(texts, labels, top_k=args.cluster_top_terms)
+    cluster_terms = cluster_top_terms_tfidf(texts, labels, top_k=args.cluster_top_terms, global_terms_to_remove=args.global_terms_to_remove)
     cluster_label_map: dict[int, str] = {
         int(c): (" • ".join(ts) if ts else f"cluster {int(c)}") for c, ts in cluster_terms.items()
     }
@@ -539,9 +552,9 @@ def main():
         #     df.loc[i, "bridge_keywords"] = ", ".join(kk)
 
     # Save artifacts
-    out_csv = os.path.join(args.outdir, OUT_CSV)
+    out_csv = os.path.join(args.outdir, args.embeddings_csv)
     df.to_csv(out_csv, index=False)
-    np.save(os.path.join(args.outdir, EMBEDDINGS_PATH), emb)
+    np.save(os.path.join(args.outdir, args.embeddings_path), emb)
 
     # Plot
     hover = ["pmid", "year", "journal", "title", "cluster", "cluster_label", "cluster_prob", "is_bridge", "bridge_keywords"]
@@ -555,16 +568,17 @@ def main():
         opacity=0.75,
     )
 
-    fig.add_annotation(
-        text=f"BIC: {bic:.2f}",
-        xref="paper",
-        yref="paper",
-        x=0.99,
-        y=0.01,
-        showarrow=False,
-        font=dict(size=14, color="black"),
-        align="right"
-    )
+    if bic is not None:
+        fig.add_annotation(
+            text=f"BIC: {bic:.2f}",
+            xref="paper",
+            yref="paper",
+            x=0.99,
+            y=0.01,
+            showarrow=False,
+            font=dict(size=14, color="black"),
+            align="right"
+        )
 
     if args.kde:
         xs, ys, Z = kde2d_on_grid(xy, gridsize=args.kde_grid, bandwidth=args.kde_bandwidth)
@@ -644,10 +658,10 @@ def main():
             hoverinfo="text",
         )
 
-    out_html = os.path.join(args.outdir, PLOT_NAME) # CHANGE PLOT NAME HERE
+    out_html = os.path.join(args.outdir, args.plot_path)
     fig.write_html(out_html, include_plotlyjs="cdn")
 
-    print(f"Wrote:\n- {out_csv}\n- {out_html}\n- {os.path.join(args.outdir, EMBEDDINGS_PATH)}")
+    print(f"Wrote:\n- {out_csv}\n- {out_html}\n- {os.path.join(args.outdir, args.embeddings_path)}")
 
 
 if __name__ == "__main__":
