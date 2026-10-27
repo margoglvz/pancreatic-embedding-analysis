@@ -32,9 +32,6 @@ For scientific-paper similarity on **titles + abstracts**, current default used 
 
 ### 3) Embed + visualize + cluster
 
-<img width="550" height="600" alt="image" src="https://github.com/user-attachments/assets/d55bd238-2891-4069-a807-8778e837e6e5" />
-
-
 ```bash
 python embed_viz.py --in data/pubmed_pancreatic_cancer.csv --model allenai/specter --outdir outputs
 ```
@@ -58,6 +55,8 @@ An additional GUI feature was made to make the process of creating these plots m
 ```bash
 python gui.py
 ```
+
+<img width="550" height="600" alt="image" src="https://github.com/user-attachments/assets/d55bd238-2891-4069-a807-8778e837e6e5" />
 
 Run `python gui.py` using the same Python environment as the scripts (on Windows, `.\.venv\Scripts\python.exe gui.py`). Tkinter is required; it is included in standard Windows Python installations.
 
