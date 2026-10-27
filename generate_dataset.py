@@ -2,7 +2,7 @@
 Collect PubMed abstracts + metadata into a local dataset.
 
 Usage (PowerShell):
-  python pubmed_collect.py --term "pancreatic cancer" --retmax 5000 --out data/pubmed_pancreatic_cancer.csv
+  python generate_dataset.py --term "pancreatic cancer" --retmax 5000 --out data/pubmed_pancreatic_cancer.csv
 
 Notes:
   - NCBI requires an email. Optionally set an API key for higher rate limits.
@@ -129,8 +129,8 @@ def gather_pmids_time_slice(term, start_date, end_date):
         f"&mindate={start_date}&maxdate={end_date}"
         "&usehistory=n"
     )
-    if NCBI_API_KEY:
-        count_url += f"&api_key={NCBI_API_KEY}"
+    if Entrez.api_key:
+        count_url += f"&api_key={Entrez.api_key}"
 
     resp = None
     for attempt in range(1, 6):
@@ -178,8 +178,8 @@ def gather_pmids_time_slice(term, start_date, end_date):
                 f"&retstart={start_offset}&retmax={retmax}"
                 "&usehistory=n"
             )
-            if NCBI_API_KEY:
-                chunk_url += f"&api_key={NCBI_API_KEY}"
+            if Entrez.api_key:
+                chunk_url += f"&api_key={Entrez.api_key}"
 
             pmids_this_chunk = []
             for attempt in range(1, 6):
@@ -246,8 +246,36 @@ def gather_pmids_time_slice(term, start_date, end_date):
 
 
 def main():
+    PUBMED_CSV = "data/pubmed_ipsc_beta.csv"
     p = argparse.ArgumentParser()
-    query = "pancreatic cancer"
+    query = """
+        (
+        "Induced Pluripotent Stem Cells"[Mesh]
+        OR iPSC[tiab]
+        OR iPSCs[tiab]
+        OR hiPSC[tiab]
+        OR hiPSCs[tiab]
+        OR "induced pluripotent stem cell"[tiab]
+        OR "induced pluripotent stem cells"[tiab]
+        )
+        AND
+        (
+        "Insulin-Secreting Cells"[Mesh]
+        OR "Islets of Langerhans"[Mesh]
+        OR "beta cell"[tiab]
+        OR "beta cells"[tiab]
+        OR "beta-cell"[tiab]
+        OR "beta-cells"[tiab]
+        OR "β-cell"[tiab]
+        OR "β-cells"[tiab]
+        OR "beta-like cell"[tiab]
+        OR "beta-like cells"[tiab]
+        OR "pancreatic islet"[tiab]
+        OR "pancreatic islets"[tiab]
+        OR "pancreatic organoid"[tiab]
+        OR "pancreatic organoids"[tiab]
+        )
+    """
     # query = """
     # (
     #     "Pancreatic Neoplasms"[MeSH Terms]
@@ -293,19 +321,33 @@ def main():
     p.add_argument("--term", default=query)
     p.add_argument("--retmax", type=int, default=15000)
     p.add_argument("--batch-size", type=int, default=200)
-    p.add_argument("--out", default="data/pubmed_only_pancreaticcancer.csv")
+    p.add_argument("--out", default=PUBMED_CSV)
     p.add_argument("--email", default=NCBI_EMAIL)
     p.add_argument("--api-key", default=NCBI_API_KEY)
+    p.add_argument("--start-date", default="2006/01/01", help="Range start (YYYY/MM/DD)")
+    p.add_argument("--end-date", default=datetime.now().strftime("%Y/%m/%d"), help="Range end (YYYY/MM/DD; default: today)")
     args = p.parse_args()
+    if not args.term.strip():
+        p.error("--term must not be empty")
+    if not args.email or not args.email.strip():
+        p.error("provide --email or set NCBI_EMAIL in your environment/.env")
+    if args.retmax <= 0 or args.batch_size <= 0:
+        p.error("--retmax and --batch-size must be positive")
+    try:
+        start_date = datetime.strptime(args.start_date, "%Y/%m/%d")
+        end_date = datetime.strptime(args.end_date, "%Y/%m/%d")
+    except ValueError:
+        p.error("dates must be valid dates in YYYY/MM/DD format")
+    if start_date > end_date:
+        p.error("--start-date must be on or before --end-date")
 
-    Entrez.email = "msgalvez@uci.edu"
-    if args.api_key:
-        Entrez.api_key = args.api_key
+    Entrez.email = args.email.strip()
+    Entrez.api_key = args.api_key or None
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
 
     # pmids = search_pmids(args.term, args.retmax) # Old Method
-    pmids = gather_pmids_time_slice(query, "2020/01/01", "2026/01/01")
+    pmids = list(dict.fromkeys(gather_pmids_time_slice(args.term, args.start_date, args.end_date)))[:args.retmax]
     rows: List[Dict[str, Any]] = []
 
     for article in tqdm(fetch_records(pmids, batch_size=args.batch_size), total=len(pmids)):
@@ -321,7 +363,7 @@ def main():
             }
         )
 
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(rows, columns=["pmid", "doi", "title", "abstract", "journal", "year"])
     df = df.dropna(subset=["abstract"]).drop_duplicates(subset=["pmid"])
     df.to_csv(args.out, index=False)
     print(f"Wrote {len(df):,} rows to {args.out}")
