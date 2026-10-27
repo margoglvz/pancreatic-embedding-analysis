@@ -112,15 +112,21 @@ def fetch_records(pmids: List[str], batch_size: int = 200, sleep_s: float = 0.34
 # Posted by jimnoneill
 # Retrieved 2026-06-15, License - CC BY-SA 4.0
 
-def gather_pmids_time_slice(term, start_date, end_date):
+def gather_pmids_time_slice(term, start_date, end_date, max_papers=None, _seen=None):
     """
     Recursively (or iteratively) gather all PMIDs from 'start_date' to 'end_date'
     even if count > 9999, by subdividing the date range into multiple slices
     proportional to the result count.
 
     start_date, end_date: "YYYY/MM/DD" strings
-    returns: list of PMID strings
+    max_papers: maximum unique PMIDs to collect; None collects all accessible IDs.
+    Stops visiting later slices as soon as this limit is reached.
+    returns: list of PMID strings in retrieval order
     """
+    if max_papers is not None and max_papers <= 0:
+        return []
+    if _seen is None:
+        _seen = set()
 
     # 1) minimal eSearch to get count
     count_url = (
@@ -165,12 +171,16 @@ def gather_pmids_time_slice(term, start_date, end_date):
         return []
 
     # 2) if c <= 9999 => normal chunk retrieval
-    if c <= 9999:
+    if c <= 9999 or (max_papers is not None and max_papers <= 9999):
         pmid_list = []
-        retmax = 10000  # up to 10000
+        retmax = 9999  # PubMed accessible ID window
         start_offset = 0
         # retrieve in standard lumps
-        while start_offset < c:
+        while start_offset < min(c, 9999):
+            remaining = c if max_papers is None else max_papers - len(pmid_list)
+            if remaining <= 0:
+                return pmid_list
+            retmax = min(remaining, 9999 - start_offset)
             chunk_url = (
                 f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?"
                 f"db=pubmed&retmode=xml&term={term}"
@@ -203,7 +213,12 @@ def gather_pmids_time_slice(term, start_date, end_date):
                 print(f"[time-slice chunk] No PMIDs found offset={start_offset}, breaking.")
                 break
 
-            pmid_list.extend(pmids_this_chunk)
+            for pmid in pmids_this_chunk:
+                if pmid not in _seen:
+                    _seen.add(pmid)
+                    pmid_list.append(pmid)
+                    if max_papers is not None and len(pmid_list) >= max_papers:
+                        return pmid_list
             got_count = len(pmids_this_chunk)
             print(f"[time-slice normal chunk] {start_date}-{end_date}: got {got_count} pmids at offset={start_offset}, total={len(pmid_list)}")
             if got_count < retmax:
@@ -221,6 +236,11 @@ def gather_pmids_time_slice(term, start_date, end_date):
     sd = datetime.strptime(start_date, "%Y/%m/%d").date()
     ed = datetime.strptime(end_date, "%Y/%m/%d").date()
     total_days = (ed - sd).days + 1
+    if total_days == 1:
+        raise RuntimeError(
+            f"More than 9,999 results on {start_date}; PubMed cannot retrieve "
+            "all IDs for this single day. Narrow the query or lower the paper limit."
+        )
     # each slice covers ~ total_days / intervals_needed days
     # watch rounding
     slice_days = math.ceil(total_days / intervals_needed)
@@ -235,8 +255,13 @@ def gather_pmids_time_slice(term, start_date, end_date):
         slice_end_str = slice_end.strftime("%Y/%m/%d")
 
         print(f"[time-slice] Sub-slice => {slice_start_str} to {slice_end_str}")
-        sub_pmids = gather_pmids_time_slice(term, slice_start_str, slice_end_str)
+        remaining = None if max_papers is None else max_papers - len(all_pmids)
+        sub_pmids = gather_pmids_time_slice(
+            term, slice_start_str, slice_end_str, max_papers=remaining, _seen=_seen
+        )
         all_pmids.extend(sub_pmids)
+        if max_papers is not None and len(all_pmids) >= max_papers:
+            return all_pmids
 
         # move to next slice
         slice_start = slice_end + pd.Timedelta(days=1)
@@ -348,7 +373,7 @@ def main():
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
 
     # pmids = search_pmids(args.term, args.retmax) # Old Method
-    pmids = list(dict.fromkeys(gather_pmids_time_slice(args.term, args.start_date, args.end_date)))[:args.retmax]
+    pmids = gather_pmids_time_slice(args.term, args.start_date, args.end_date, max_papers=args.retmax)
     rows: List[Dict[str, Any]] = []
 
     for article in tqdm(fetch_records(pmids, batch_size=args.batch_size), total=len(pmids)):
